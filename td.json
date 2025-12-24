@@ -1,0 +1,81 @@
+{
+    "taskDefinitionArn": "arn:aws:ecs:ap-southeast-1:115020687206:task-definition/carbonbackend:1",
+    "containerDefinitions": [
+        {
+            "name": "carbonbackend",
+            "image": "115020687206.dkr.ecr.ap-southeast-1.amazonaws.com/carbonbackend:20251112170447",
+            "cpu": 0,
+            "portMappings": [
+                {
+                    "containerPort": 3000,
+                    "hostPort": 3000,
+                    "protocol": "tcp"
+                }
+            ],
+            "essential": true,
+            "environment": [
+                {
+                    "name": "NODE_ENV",
+                    "value": "production"
+                }
+            ],
+            "mountPoints": [],
+            "volumesFrom": [],
+            "logConfiguration": {
+                "logDriver": "awslogs",
+                "options": {
+                    "awslogs-group": "ecs/carbonbackend",
+                    "awslogs-region": "ap-southeast-1",
+                    "awslogs-stream-prefix": "ecs"
+                }
+            },
+            "systemControls": []
+        }
+    ],
+    "family": "carbonbackend",
+    "taskRoleArn": "arn:aws:iam::115020687206:role/ecsTaskRole-carbonbackend",
+    "executionRoleArn": "arn:aws:iam::115020687206:role/ecsTaskExecutionRole-carbonbackend",
+    "networkMode": "awsvpc",
+    "revision": 1,
+    "volumes": [],
+    "status": "ACTIVE",
+    "requiresAttributes": [
+        {
+            "name": "com.amazonaws.ecs.capability.logging-driver.awslogs"
+        },
+        {
+            "name": "ecs.capability.execution-role-awslogs"
+        },
+        {
+            "name": "com.amazonaws.ecs.capability.ecr-auth"
+        },
+        {
+            "name": "com.amazonaws.ecs.capability.docker-remote-api.1.19"
+        },
+        {
+            "name": "com.amazonaws.ecs.capability.task-iam-role"
+        },
+        {
+            "name": "ecs.capability.execution-role-ecr-pull"
+        },
+        {
+            "name": "com.amazonaws.ecs.capability.docker-remote-api.1.18"
+        },
+        {
+            "name": "ecs.capability.task-eni"
+        }
+    ],
+    "placementConstraints": [],
+    "compatibilities": [
+        "EC2",
+        "FARGATE",
+        "MANAGED_INSTANCES"
+    ],
+    "requiresCompatibilities": [
+        "FARGATE"
+    ],
+    "cpu": "256",
+    "memory": "512",
+    "registeredAt": "2025-11-12T17:21:25.573000+08:00",
+    "registeredBy": "arn:aws:iam::115020687206:user/Mike_Tye"
+}

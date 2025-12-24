@@ -1,0 +1,55 @@
+{
+    "containerDefinitions": [
+        {
+            "name": "carbonbackend",
+            "image": "115020687206.dkr.ecr.ap-southeast-1.amazonaws.com/carbonbackend@sha256:5798b3fb9d44f827a96f32c9985b8c964d57fb2d6e43acda6f764c07536e040d",
+            "cpu": 0,
+            "portMappings": [
+                {
+                    "containerPort": 3000,
+                    "hostPort": 3000,
+                    "protocol": "tcp"
+                }
+            ],
+            "essential": true,
+            "environment": [
+                {
+                    "name": "NODE_ENV",
+                    "value": "production"
+                },
+                { "name": "DB_HOST", "value": "carbon-mvp.cddckvreyl2l.ap-southeast-1.rds.amazonaws.com" },
+                { "name": "DB_PORT", "value": "5432" },
+                { "name": "DB_USER", "value": "carbon_admin" },
+                { "name": "DB_PASSWORD", "value": "nLnD*EwvGKq6]0[Qy:2o3UT:Jd8y" },
+                { "name": "DB_NAME", "value": "postgres" },
+                { "name": "DB_SSL", "value": "true" },
+                { "name": "JWT_SECRET", "value": "super-secret-jwt-key"},
+                { "name": "BUCKET", "value": "tcs-media-dev"},
+                { "name": "AWS_REGION", "value": "ap-southeast-1"},
+                { "name": "PUBLIC_BASE_URL", "value": "https://d5wtlv6yxcbqa.cloudfront.net"}
+            ],
+            "mountPoints": [],
+            "volumesFrom": [],
+            "logConfiguration": {
+                "logDriver": "awslogs",
+                "options": {
+                    "awslogs-group": "ecs/carbonbackend",
+                    "awslogs-region": "ap-southeast-1",
+                    "awslogs-stream-prefix": "ecs"
+                }
+            },
+            "systemControls": []
+        }
+    ],
+    "family": "carbonbackend",
+    "taskRoleArn": "arn:aws:iam::115020687206:role/ecsTaskRole-carbonbackend",
+    "executionRoleArn": "arn:aws:iam::115020687206:role/ecsTaskExecutionRole-carbonbackend",
+    "networkMode": "awsvpc",
+    "volumes": [],
+    "placementConstraints": [],
+    "requiresCompatibilities": [
+        "FARGATE"
+    ],
+    "cpu": "256",
+    "memory": "512"
+}
