@@ -1,8 +1,10 @@
 import { Router } from "express";
 import { query } from "../db/connection.js";
 import { authMiddleware, type AuthedRequest } from "../middleware/auth.js";
-import { deleteObjectByKey, extractKeyFromAssetUrl, getSignedReadUrlForKey, toPublicAssetUrl,
-    getUploadUrlForCompanyDocument, getUploadUrlForCompanyMedia } from "../lib/s3Media.js";
+import {
+    deleteObjectByKey, extractKeyFromAssetUrl, getSignedReadUrlForKey, toPublicAssetUrl,
+    getUploadUrlForCompanyDocument, getUploadUrlForCompanyMedia
+} from "../lib/s3Media.js";
 
 const router = Router();
 
@@ -33,26 +35,26 @@ type CompanyWithTotals = CompanyRow & {
 
 // ───────────────────────── List companies ─────────────────────────
 router.get("/", async (req, res) => {
-  try {
-    const page = Math.max(parseInt(String(req.query.page ?? "1"), 10) || 1, 1);
-    const pageSize = Math.min(Math.max(parseInt(String(req.query.pageSize ?? "20"), 10) || 20, 1), 100);
-    const offset = (page - 1) * pageSize;
+    try {
+        const page = Math.max(parseInt(String(req.query.page ?? "1"), 10) || 1, 1);
+        const pageSize = Math.min(Math.max(parseInt(String(req.query.pageSize ?? "20"), 10) || 20, 1), 100);
+        const offset = (page - 1) * pageSize;
 
-    const q = (req.query.q as string | undefined)?.trim();
+        const q = (req.query.q as string | undefined)?.trim();
 
-    const where: string[] = ["c.delete_flag = false"];
-    const params: any[] = [];
-    let i = 1;
+        const where: string[] = ["c.delete_flag = false"];
+        const params: any[] = [];
+        let i = 1;
 
-    if (q) {
-      where.push(`(c.legal_name ILIKE $${i} OR c.company_email ILIKE $${i})`);
-      params.push(`%${q}%`);
-      i++;
-    }
+        if (q) {
+            where.push(`(c.legal_name ILIKE $${i} OR c.company_email ILIKE $${i})`);
+            params.push(`%${q}%`);
+            i++;
+        }
 
-    const whereSQL = where.length ? `WHERE ${where.join(" AND ")}` : "";
+        const whereSQL = where.length ? `WHERE ${where.join(" AND ")}` : "";
 
-    const listSql = `
+        const listSql = `
       SELECT
         c.*,
         cmc.cover_media_id,
@@ -80,59 +82,59 @@ router.get("/", async (req, res) => {
       LIMIT $${i} OFFSET $${i + 1}
     `;
 
-    const listParams = [...params, pageSize, offset];
+        const listParams = [...params, pageSize, offset];
 
-    const countSql = `
+        const countSql = `
       SELECT COUNT(*)::bigint AS count
       FROM companies c
       ${whereSQL}
     `;
 
-    const [rowsRes, countRes] = await Promise.all([
-      query(listSql, listParams),
-      query(countSql, params),
-    ]);
+        const [rowsRes, countRes] = await Promise.all([
+            query(listSql, listParams),
+            query(countSql, params),
+        ]);
 
-    const items = rowsRes.rows.map((r: any) => ({
-      ...r,
-      cover_asset_url: toPublicAssetUrl({ asset_url: r.cover_asset_url, s3_key: r.cover_s3_key }),
-    }));
+        const items = rowsRes.rows.map((r: any) => ({
+            ...r,
+            cover_asset_url: toPublicAssetUrl({ asset_url: r.cover_asset_url, s3_key: r.cover_s3_key }),
+        }));
 
-    const total = Number(countRes.rows[0]?.count ?? 0);
+        const total = Number(countRes.rows[0]?.count ?? 0);
 
-    res.json({ items, total, page, pageSize });
-  } catch (err) {
-    console.error("GET /companies error", err);
-    res.status(500).json({ error: "internal_error" });
-  }
+        res.json({ items, total, page, pageSize });
+    } catch (err) {
+        console.error("GET /companies error", err);
+        res.status(500).json({ error: "internal_error" });
+    }
 });
 
 router.get("/mycompanies", authMiddleware, async (req: AuthedRequest, res) => {
-  try {
-    if (!req.user) return res.status(401).json({ error: "Unauthorized" });
+    try {
+        if (!req.user) return res.status(401).json({ error: "Unauthorized" });
 
-    const page = Math.max(parseInt(String(req.query.page ?? "1"), 10) || 1, 1);
-    const pageSize = Math.min(
-      Math.max(parseInt(String(req.query.pageSize ?? "20"), 10) || 20, 1),
-      100
-    );
-    const offset = (page - 1) * pageSize;
+        const page = Math.max(parseInt(String(req.query.page ?? "1"), 10) || 1, 1);
+        const pageSize = Math.min(
+            Math.max(parseInt(String(req.query.pageSize ?? "20"), 10) || 20, 1),
+            100
+        );
+        const offset = (page - 1) * pageSize;
 
-    const q = (req.query.q as string | undefined)?.trim();
+        const q = (req.query.q as string | undefined)?.trim();
 
-    const where: string[] = ["c.delete_flag = false", `c.owner_user_id = $1`];
-    const params: any[] = [req.user.id];
-    let i = 2; // $1 is owner_user_id
+        const where: string[] = ["c.delete_flag = false", `c.owner_user_id = $1`];
+        const params: any[] = [req.user.id];
+        let i = 2; // $1 is owner_user_id
 
-    if (q) {
-      where.push(`(c.legal_name ILIKE $${i} OR c.company_email ILIKE $${i})`);
-      params.push(`%${q}%`);
-      i++;
-    }
+        if (q) {
+            where.push(`(c.legal_name ILIKE $${i} OR c.company_email ILIKE $${i})`);
+            params.push(`%${q}%`);
+            i++;
+        }
 
-    const whereSQL = `WHERE ${where.join(" AND ")}`;
+        const whereSQL = `WHERE ${where.join(" AND ")}`;
 
-    const listSql = `
+        const listSql = `
       SELECT
         c.*,
         cmc.cover_media_id,
@@ -161,34 +163,34 @@ router.get("/mycompanies", authMiddleware, async (req: AuthedRequest, res) => {
       LIMIT $${i} OFFSET $${i + 1}
     `;
 
-    const listParams = [...params, pageSize, offset];
+        const listParams = [...params, pageSize, offset];
 
-    const countSql = `
+        const countSql = `
       SELECT COUNT(*)::bigint AS count
       FROM companies c
       ${whereSQL}
     `;
 
-    const [rowsRes, countRes] = await Promise.all([
-      query(listSql, listParams),
-      query(countSql, params),
-    ]);
+        const [rowsRes, countRes] = await Promise.all([
+            query(listSql, listParams),
+            query(countSql, params),
+        ]);
 
-    const items = rowsRes.rows.map((r: any) => ({
-      ...r,
-      cover_asset_url: toPublicAssetUrl({
-        asset_url: r.cover_asset_url,
-        s3_key: r.cover_s3_key,
-      }),
-    }));
+        const items = rowsRes.rows.map((r: any) => ({
+            ...r,
+            cover_asset_url: toPublicAssetUrl({
+                asset_url: r.cover_asset_url,
+                s3_key: r.cover_s3_key,
+            }),
+        }));
 
-    const total = Number(countRes.rows[0]?.count ?? 0);
+        const total = Number(countRes.rows[0]?.count ?? 0);
 
-    return res.json({ items, total, page, pageSize });
-  } catch (err) {
-    console.error("GET /companies/mycompanies error", err);
-    return res.status(500).json({ error: "internal_error" });
-  }
+        return res.json({ items, total, page, pageSize });
+    } catch (err) {
+        console.error("GET /companies/mycompanies error", err);
+        return res.status(500).json({ error: "internal_error" });
+    }
 });
 
 // ───────────────────────── Create company ─────────────────────────
@@ -293,20 +295,58 @@ router.get("/:id", async (req, res) => {
         const sql = `
       SELECT
         c.*,
+
+        -- cover media (same as list)
+        cmc.cover_media_id,
+        cmc.cover_asset_url,
+        cmc.cover_content_type,
+        cmc.cover_s3_key,
+
+        -- credit totals (same as list)
         COALESCE(t.to_date_issued, 0)::text  AS to_date_issued,
         COALESCE(t.to_date_offtake, 0)::text AS to_date_offtake,
         COALESCE(t.to_date_retired, 0)::text AS to_date_retired
+
       FROM companies c
-      LEFT JOIN v_company_credit_totals t ON t.company_id = c.id
-      WHERE c.id = $1 AND c.delete_flag = false
+
+      LEFT JOIN LATERAL (
+        SELECT
+          cm.id        AS cover_media_id,
+          cm.asset_url AS cover_asset_url,
+          cm.content_type AS cover_content_type,
+          cm.s3_key    AS cover_s3_key
+        FROM company_media cm
+        WHERE cm.company_id = c.id
+          AND (
+            (cm.asset_url IS NOT NULL AND cm.asset_url <> '')
+            OR (cm.s3_key IS NOT NULL AND cm.s3_key <> '')
+          )
+        ORDER BY cm.is_cover DESC, cm.created_at DESC
+        LIMIT 1
+      ) cmc ON true
+
+      LEFT JOIN v_company_credit_totals t
+        ON t.company_id = c.id
+
+      WHERE c.id = $1
+        AND c.delete_flag = false
+      LIMIT 1
     `;
 
-        const { rows } = await query<CompanyWithTotals>(sql, [id]);
-        const company = rows[0];
+        const { rows } = await query(sql, [id]);
+        const row = rows[0];
 
-        if (!company) {
+        if (!row) {
             return res.status(404).json({ error: "not_found" });
         }
+
+        const company = {
+            ...row,
+            cover_asset_url: toPublicAssetUrl({
+                asset_url: row.cover_asset_url,
+                s3_key: row.cover_s3_key,
+            }),
+        };
 
         res.json(company);
     } catch (err) {
