@@ -6,6 +6,7 @@ import {
     publicAssetUrlForKey
 } from "../lib/s3Media.js";
 import { authMiddleware, type AuthedRequest } from "../middleware/auth.js";
+import { fetchProjectById, fetchProjectMediaByProjectId } from "../services/project.service.js";
 
 const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL;
 
@@ -51,93 +52,333 @@ const updatableProjectCols = insertableProjectCols; // same set for now
 // --- List projects -------------------------------------------------
 // GET /projects?Page&pageSize&q&projectType&status&sector&hostCountry&companyId
 router.get("/", async (req, res) => {
-  try {
-    const page = Math.max(parseInt(String(req.query.page ?? "1"), 10) || 1, 1);
-    const pageSize = Math.min(Math.max(parseInt(String(req.query.pageSize ?? "20"), 10) || 20, 1), 100);
+    try {
+        const page = Math.max(parseInt(String(req.query.page ?? "1"), 10) || 1, 1);
+        const pageSize = Math.min(
+            Math.max(parseInt(String(req.query.pageSize ?? "20"), 10) || 20, 1),
+            100
+        );
 
-    const q = (req.query.q as string | undefined)?.trim();
-    const projectType = req.query.projectType as string | undefined;
-    const status = req.query.status as string | undefined;
-    const sector = req.query.sector as string | undefined;
-    const hostCountry = req.query.hostCountry as string | undefined;
-    const companyId = req.query.companyId as string | undefined;
+        const q = (req.query.q as string | undefined)?.trim();
+        const companyId = (req.query.companyId as string | undefined)?.trim();
 
-    const where: string[] = ["p.delete_flag = false"];
-    const params: any[] = [];
-    let i = 1;
+        // Temporary until auth/session is properly wired
+        // Use one consistent user context for scope/isSaved/isMine
+        const contextUserId = (req.query.userId as string | undefined)?.trim() || null;
 
-    if (q) {
-      where.push(`(p.name ILIKE $${i} OR p.description ILIKE $${i})`);
-      params.push(`%${q}%`);
-      i++;
+        const scopeRaw = String(req.query.scope ?? "all").toLowerCase();
+        const scope = scopeRaw === "my" || scopeRaw === "saved" ? scopeRaw : "all";
+
+        const includeCounts =
+            String(req.query.includeCounts ?? "false").toLowerCase() === "true";
+
+        const parseCsv = (value: unknown): string[] => {
+            if (!value || typeof value !== "string") return [];
+            return value
+                .split(",")
+                .map((v) => v.trim())
+                .filter(Boolean);
+        };
+
+        const stages = parseCsv(req.query.stage);
+        const projectTypes = parseCsv(req.query.projectType);
+        const hostCountries = parseCsv(req.query.hostCountry);
+        const opportunities = parseCsv(req.query.opportunity);
+
+        const sortBy = String(req.query.sortBy ?? "updated");
+        const sortDir =
+            String(req.query.sortDir ?? "desc").toLowerCase() === "asc" ? "ASC" : "DESC";
+
+        const sortableColumns: Record<string, string> = {
+            name: "p.name",
+            developer: "c.name",
+            stage: "p.status", // change to p.stage if you rename column
+            type: "p.project_type",
+            country: "p.host_country",
+            updated: "p.updated_at",
+        };
+
+        const orderBy = sortableColumns[sortBy] ?? "p.updated_at";
+
+        const where: string[] = ["p.delete_flag = false"];
+        const params: unknown[] = [];
+        let i = 1;
+
+        if (q) {
+            where.push(`
+                (
+                    p.name ILIKE $${i}
+                    OR p.description ILIKE $${i}
+                    OR c.name ILIKE $${i}
+                    OR p.upid ILIKE $${i}
+                    OR p.host_country ILIKE $${i}
+                    OR p.host_region ILIKE $${i}
+                )
+            `);
+            params.push(`%${q}%`);
+            i++;
+        }
+
+        if (companyId) {
+            where.push(`p.company_id = $${i}`);
+            params.push(companyId);
+            i++;
+        }
+
+        if (stages.length > 0) {
+            where.push(`p.status = ANY($${i}::text[])`);
+            params.push(stages);
+            i++;
+        }
+
+        if (projectTypes.length > 0) {
+            where.push(`p.project_type = ANY($${i}::text[])`);
+            params.push(projectTypes);
+            i++;
+        }
+
+        if (hostCountries.length > 0) {
+            where.push(`p.host_country = ANY($${i}::text[])`);
+            params.push(hostCountries);
+            i++;
+        }
+
+        if (opportunities.length > 0) {
+            where.push(`
+                EXISTS (
+                    SELECT 1
+                    FROM project_opportunities po
+                    WHERE po.project_id = p.id
+                      AND po.opportunity_type = ANY($${i}::text[])
+                )
+            `);
+            params.push(opportunities);
+            i++;
+        }
+
+        // Scope filter
+        if (scope === "my") {
+            if (!contextUserId) {
+                return res.status(400).json({
+                    error: "user_id_required_for_scope_my",
+                });
+            }
+
+            where.push(`p.owner_user_id = $${i}::uuid`);
+            params.push(contextUserId);
+            i++;
+        }
+
+        if (scope === "saved") {
+            if (!contextUserId) {
+                return res.status(400).json({
+                    error: "user_id_required_for_scope_saved",
+                });
+            }
+
+            where.push(`
+                EXISTS (
+                    SELECT 1
+                    FROM saved_projects sp_scope
+                    WHERE sp_scope.project_id = p.id
+                      AND sp_scope.user_id = $${i}::uuid
+                )
+            `);
+            params.push(contextUserId);
+            i++;
+        }
+
+        const whereSQL = `WHERE ${where.join(" AND ")}`;
+        const offset = (page - 1) * pageSize;
+
+        // Reuse one param for computed flags
+        const contextUserParamIndex = i;
+        const limitParamIndex = i + 1;
+        const offsetParamIndex = i + 2;
+
+        const listSql = `
+            SELECT
+                p.id,
+                p.upid,
+                p.name,
+                p.description,
+                p.status AS stage,
+                p.project_type AS type,
+                p.host_country AS country,
+                p.host_country_code AS country_code,
+                p.host_region AS region,
+                p.latitude AS lat,
+                p.longitude AS lng,
+                p.updated_at,
+                p.created_at,
+                p.company_id,
+                p.owner_user_id,
+
+                c.name AS developer,
+
+                v.to_date_issued,
+                v.to_date_offtake,
+                v.to_date_retired,
+
+                pmc.cover_media_id,
+                pmc.cover_asset_url,
+                pmc.cover_content_type,
+                pmc.cover_s3_key,
+
+                COALESCE((
+                    SELECT json_agg(po.opportunity_type ORDER BY po.opportunity_type)
+                    FROM project_opportunities po
+                    WHERE po.project_id = p.id
+                ), '[]'::json) AS opportunities,
+
+                CASE
+                    WHEN $${contextUserParamIndex}::uuid IS NOT NULL THEN EXISTS (
+                        SELECT 1
+                        FROM saved_projects sp
+                        WHERE sp.project_id = p.id
+                          AND sp.user_id = $${contextUserParamIndex}::uuid
+                    )
+                    ELSE false
+                END AS is_saved,
+
+                CASE
+                    WHEN $${contextUserParamIndex}::uuid IS NOT NULL
+                         AND p.owner_user_id = $${contextUserParamIndex}::uuid
+                    THEN true
+                    ELSE false
+                END AS is_mine
+
+            FROM projects p
+            LEFT JOIN companies c
+                ON c.id = p.company_id
+            LEFT JOIN v_project_credit_totals v
+                ON v.project_id = p.id
+            LEFT JOIN LATERAL (
+                SELECT
+                    pm.id AS cover_media_id,
+                    pm.asset_url AS cover_asset_url,
+                    pm.content_type AS cover_content_type,
+                    pm.s3_key AS cover_s3_key
+                FROM project_media pm
+                WHERE pm.project_id = p.id
+                  AND (
+                    (pm.asset_url IS NOT NULL AND pm.asset_url <> '')
+                    OR
+                    (pm.s3_key IS NOT NULL AND pm.s3_key <> '')
+                  )
+                ORDER BY pm.is_cover DESC, pm.created_at DESC
+                LIMIT 1
+            ) pmc ON true
+
+            ${whereSQL}
+            ORDER BY ${orderBy} ${sortDir}, p.id ASC
+            LIMIT $${limitParamIndex} OFFSET $${offsetParamIndex}
+        `;
+
+        const countSql = `
+            SELECT COUNT(*)::bigint AS count
+            FROM projects p
+            LEFT JOIN companies c
+                ON c.id = p.company_id
+            ${whereSQL}
+        `;
+
+        const listParams = [...params, contextUserId, pageSize, offset];
+
+        const [rowsRes, countRes] = await Promise.all([
+            query(listSql, listParams),
+            query(countSql, params),
+        ]);
+
+        const items = rowsRes.rows.map((r: any) => ({
+            id: r.id,
+            upid: r.upid,
+            name: r.name,
+            developer: r.developer,
+            description: r.description,
+            stage: r.stage,
+            type: r.type,
+            country: r.country,
+            countryCode: r.country_code,
+            region: r.region,
+            lat: r.lat != null ? Number(r.lat) : null,
+            lng: r.lng != null ? Number(r.lng) : null,
+            updatedAt: r.updated_at,
+            opportunities: r.opportunities ?? [],
+            isSaved: Boolean(r.is_saved),
+            isMine: Boolean(r.is_mine),
+            coverAssetUrl: toPublicAssetUrl({
+                asset_url: r.cover_asset_url,
+                s3_key: r.cover_s3_key,
+            }),
+            creditTotals: {
+                toDateIssued: r.to_date_issued,
+                toDateOfftake: r.to_date_offtake,
+                toDateRetired: r.to_date_retired,
+            },
+        }));
+
+        const total = Number(countRes.rows[0]?.count ?? 0);
+
+        const response: any = {
+            items,
+            total,
+            page,
+            pageSize,
+            sortBy,
+            sortDir: sortDir.toLowerCase(),
+            scope,
+        };
+
+        if (includeCounts) {
+            if (contextUserId) {
+                const countsSql = `
+                    SELECT
+                        COUNT(*) FILTER (WHERE p.delete_flag = false) ::bigint AS all_count,
+                        COUNT(*) FILTER (
+                            WHERE p.delete_flag = false
+                              AND p.owner_user_id = $1::uuid
+                        ) ::bigint AS my_count,
+                        COUNT(*) FILTER (
+                            WHERE p.delete_flag = false
+                              AND EXISTS (
+                                  SELECT 1
+                                  FROM saved_projects sp
+                                  WHERE sp.project_id = p.id
+                                    AND sp.user_id = $1::uuid
+                              )
+                        ) ::bigint AS saved_count
+                    FROM projects p
+                `;
+
+                const countsRes = await query(countsSql, [contextUserId]);
+
+                response.counts = {
+                    all: Number(countsRes.rows[0]?.all_count ?? 0),
+                    my: Number(countsRes.rows[0]?.my_count ?? 0),
+                    saved: Number(countsRes.rows[0]?.saved_count ?? 0),
+                };
+            } else {
+                const countsSql = `
+                    SELECT COUNT(*)::bigint AS all_count
+                    FROM projects p
+                    WHERE p.delete_flag = false
+                `;
+                const countsRes = await query(countsSql);
+
+                response.counts = {
+                    all: Number(countsRes.rows[0]?.all_count ?? 0),
+                    my: 0,
+                    saved: 0,
+                };
+            }
+        }
+
+        res.json(response);
+    } catch (err) {
+        console.error("GET /projects error", err);
+        res.status(500).json({ error: "internal_error" });
     }
-    if (projectType) { where.push(`p.project_type = $${i}`); params.push(projectType); i++; }
-    if (status) { where.push(`p.status = $${i}`); params.push(status); i++; }
-    if (sector) { where.push(`p.sector = $${i}`); params.push(sector); i++; }
-    if (hostCountry) { where.push(`p.host_country = $${i}`); params.push(hostCountry); i++; }
-    if (companyId) { where.push(`p.company_id = $${i}`); params.push(companyId); i++; }
-
-    const whereSQL = where.length ? `WHERE ${where.join(" AND ")}` : "";
-    const offset = (page - 1) * pageSize;
-
-    const listSql = `
-      SELECT
-        p.*,
-        v.to_date_issued,
-        v.to_date_offtake,
-        v.to_date_retired,
-
-        pmc.cover_media_id,
-        pmc.cover_asset_url,
-        pmc.cover_content_type,
-        pmc.cover_s3_key
-
-      FROM projects p
-      LEFT JOIN v_project_credit_totals v
-        ON v.project_id = p.id
-
-      LEFT JOIN LATERAL (
-        SELECT
-          pm.id AS cover_media_id,
-          pm.asset_url AS cover_asset_url,
-          pm.content_type AS cover_content_type,
-          pm.s3_key AS cover_s3_key
-        FROM project_media pm
-        WHERE pm.project_id = p.id
-          AND (pm.asset_url IS NOT NULL AND pm.asset_url <> '' OR pm.s3_key IS NOT NULL AND pm.s3_key <> '')
-        ORDER BY pm.is_cover DESC, pm.created_at DESC
-        LIMIT 1
-      ) pmc ON true
-
-      ${whereSQL}
-      ORDER BY p.created_at DESC
-      LIMIT $${i} OFFSET $${i + 1}
-    `;
-    const listParams = [...params, pageSize, offset];
-
-    const countSql = `
-      SELECT COUNT(*)::bigint AS count
-      FROM projects p
-      ${whereSQL}
-    `;
-
-    const [rowsRes, countRes] = await Promise.all([
-      query(listSql, listParams),
-      query(countSql, params),
-    ]);
-
-    const items = rowsRes.rows.map((r: any) => ({
-      ...r,
-      cover_asset_url: toPublicAssetUrl({ asset_url: r.cover_asset_url, s3_key: r.cover_s3_key }),
-    }));
-
-    const total = Number(countRes.rows[0]?.count ?? 0);
-
-    res.json({ items, total, page, pageSize });
-  } catch (err) {
-    console.error("GET /projects error", err);
-    res.status(500).json({ error: "internal_error" });
-  }
 });
 
 router.get("/myprojects", authMiddleware, async (req: AuthedRequest, res) => {
@@ -177,29 +418,13 @@ router.get("/:id", async (req, res) => {
     try {
         const { id } = req.params;
 
-        const sql = `
-      SELECT
-        p.*,
-        v.to_date_issued,
-        v.to_date_offtake,
-        v.to_date_retired,
-        (
-          SELECT COUNT(*)::int
-          FROM project_documents d
-          WHERE d.project_id = p.id
-        ) AS document_count
-      FROM projects p
-      LEFT JOIN v_project_credit_totals v
-        ON v.project_id = p.id
-      WHERE p.id = $1
-        AND p.delete_flag = false
-      LIMIT 1
-    `;
-        const { rows } = await query(sql, [id]);
+        const project = await fetchProjectById(id);
 
-        if (!rows[0]) return res.status(404).json({ error: "not_found" });
+        if (!project) {
+            return res.status(404).json({ error: "not_found" });
+        }
 
-        res.json(rows[0]);
+        res.json(project);
     } catch (err) {
         console.error("GET /projects/:id error", err);
         res.status(500).json({ error: "internal_error" });
@@ -437,47 +662,11 @@ router.get("/:id/media", async (req: AuthedRequest, res) => {
     try {
         const { id } = req.params;
 
-        const sql = `
-      SELECT
-        id,
-        project_id,
-        kind,
-        asset_url,
-        content_type,
-        sha256,
-        metadata,
-        s3_key,
-        created_at,
-        is_cover
-      FROM project_media
-      WHERE project_id = $1
-      ORDER BY is_cover DESC, created_at DESC
-    `;
-        const { rows } = await query(sql, [id]);
+        if (!id) {
+            return res.status(400).json({ error: "missing_id" });
+        }
 
-        const items = await Promise.all(
-            rows.map(async (row) => {
-                // Prefer explicit s3_key; otherwise derive from stored asset_url.
-                const key =
-                    row.s3_key || extractKeyFromAssetUrl(row.asset_url) || null;
-
-                let signedUrl: string | null = null;
-                if (key) {
-                    try {
-                        signedUrl = await getSignedReadUrlForKey(key);
-                    } catch (e) {
-                        console.error("Failed to sign S3 URL for key", key, e);
-                    }
-                }
-
-                return {
-                    ...row,
-                    // keep original asset_url in case you still want to use it,
-                    // and add a safe URL the frontend can rely on:
-                    asset_url: row.asset_url ?? (key ? publicAssetUrlForKey(key) : null),
-                };
-            })
-        );
+        const items = await fetchProjectMediaByProjectId(id);
 
         res.json({ items });
     } catch (err) {
@@ -868,6 +1057,76 @@ router.delete(
         }
     }
 );
+
+router.get("/:id/share", async (req, res) => {
+    const { id } = req.params;
+
+    if (!id) {
+        return res.status(400).send("Missing id");
+    }
+
+    // 1) Fetch project
+    const project = await fetchProjectById(id);
+
+    if (!project) {
+        return res.status(404).send("Not found");
+    }
+
+    // 2) Fetch media separately
+    const mediaItems = await fetchProjectMediaByProjectId(id);
+
+    const name = project.name || "Project Details";
+    const status = project.status || "Planned";
+    const projectType = project.project_type || project.projectType || "-";
+    const sector = project.sector || "-";
+    const hostCountry = project.host_country || project.hostCountry || "-";
+
+    const images = (mediaItems || [])
+        .filter((item) => item.asset_url || item.signed_url)
+        .map((item) => ({
+            // Prefer stable URL for crawlers
+            src: item.asset_url || item.signed_url,
+            isCover: item.is_cover,
+        }));
+
+    const coverImage =
+        images.find((i) => i.isCover)?.src ||
+        images[0]?.src ||
+        "https://preview.thecarboneconomy.org/default-share.png";
+
+    const siteBase = "https://preview.thecarboneconomy.org";
+    const spaUrl = `${siteBase}/public/projects/${id}`;
+
+    const title = `${name} (${status})`;
+    const description = `${projectType} • ${sector} • ${hostCountry}`;
+
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.setHeader("Cache-Control", "public, max-age=300, s-maxage=600");
+
+    res.send(`<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>${title}</title>
+
+<meta property="og:type" content="website" />
+<meta property="og:title" content="${title}" />
+<meta property="og:description" content="${description}" />
+<meta property="og:image" content="${coverImage}" />
+<meta property="og:url" content="${spaUrl}" />
+
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:title" content="${title}" />
+<meta name="twitter:description" content="${description}" />
+<meta name="twitter:image" content="${coverImage}" />
+
+<meta http-equiv="refresh" content="0; url=${spaUrl}" />
+</head>
+<body>
+<script>location.replace(${JSON.stringify(spaUrl)});</script>
+</body>
+</html>`);
+});
 
 // --- Export router -------------------------------------------------
 export default router;

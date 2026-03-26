@@ -41,14 +41,51 @@ router.get("/", async (req, res) => {
         const offset = (page - 1) * pageSize;
 
         const q = (req.query.q as string | undefined)?.trim();
+        const countriesRaw = (req.query.countries as string | undefined)?.trim();
+        const ownerUserId = req.query.ownerUserId as string | undefined;
+        const businessFunction = (req.query.businessFunction as string | undefined)?.trim();
+
+        const countries = countriesRaw
+            ? countriesRaw.split(",").map((s) => s.trim()).filter(Boolean)
+            : [];
 
         const where: string[] = ["c.delete_flag = false"];
         const params: any[] = [];
         let i = 1;
 
         if (q) {
-            where.push(`(c.legal_name ILIKE $${i} OR c.company_email ILIKE $${i})`);
+            where.push(
+                `(c.legal_name ILIKE $${i}
+          OR c.company_email ILIKE $${i}
+          OR c.function_description ILIKE $${i})`
+            );
             params.push(`%${q}%`);
+            i++;
+        }
+
+        if (countries.length) {
+            // country match against geographical_coverage text[]
+            where.push(`
+        EXISTS (
+          SELECT 1
+          FROM unnest(c.geographical_coverage) AS g
+          WHERE g = ANY($${i}::text[])
+        )
+      `);
+            params.push(countries);
+            i++;
+        }
+
+        if (businessFunction) {
+            // case-insensitive exact match
+            where.push(`LOWER(c.business_function) = LOWER($${i})`);
+            params.push(businessFunction);
+            i++;
+        }
+
+        if (ownerUserId) {
+            where.push(`c.owner_user_id = $${i}`);
+            params.push(ownerUserId);
             i++;
         }
 
@@ -60,10 +97,18 @@ router.get("/", async (req, res) => {
         cmc.cover_media_id,
         cmc.cover_asset_url,
         cmc.cover_content_type,
-        cmc.cover_s3_key
-
+        cmc.cover_s3_key,
+        up.id                  AS owner_profile_id,
+        up.full_name           AS owner_full_name,
+        up.headline            AS owner_headline,
+        up.country             AS owner_country,
+        up.city                AS owner_city,
+        up.role_type           AS owner_role_type,
+        up.show_contact_email  AS owner_show_contact_email,
+        up.contact_email       AS owner_contact_email,
+        up.show_phone          AS owner_show_phone,
+        up.phone_number        AS owner_phone_number
       FROM companies c
-
       LEFT JOIN LATERAL (
         SELECT
           cm.id AS cover_media_id,
@@ -72,11 +117,17 @@ router.get("/", async (req, res) => {
           cm.s3_key AS cover_s3_key
         FROM company_media cm
         WHERE cm.company_id = c.id
-          AND (cm.asset_url IS NOT NULL AND cm.asset_url <> '' OR cm.s3_key IS NOT NULL AND cm.s3_key <> '')
+          AND (
+            (cm.asset_url IS NOT NULL AND cm.asset_url <> '')
+            OR (cm.s3_key IS NOT NULL AND cm.s3_key <> '')
+          )
         ORDER BY cm.is_cover DESC, cm.created_at DESC
         LIMIT 1
       ) cmc ON true
-
+      LEFT JOIN user_profiles up
+        ON up.user_id = c.owner_user_id
+       AND up.delete_flag = false
+       AND up.is_public = true
       ${whereSQL}
       ORDER BY c.created_at DESC
       LIMIT $${i} OFFSET $${i + 1}
@@ -105,6 +156,27 @@ router.get("/", async (req, res) => {
         res.json({ items, total, page, pageSize });
     } catch (err) {
         console.error("GET /companies error", err);
+        res.status(500).json({ error: "internal_error" });
+    }
+});
+
+router.get("/business-functions", async (req, res) => {
+    try {
+        const sql = `
+      SELECT DISTINCT business_function
+      FROM companies
+      WHERE delete_flag = false
+        AND business_function IS NOT NULL
+        AND trim(business_function) <> ''
+      ORDER BY business_function ASC
+    `;
+        const { rows } = await query(sql);
+
+        res.json({
+            items: rows.map((r: any) => r.business_function),
+        });
+    } catch (err) {
+        console.error("GET /companies/business-functions error", err);
         res.status(500).json({ error: "internal_error" });
     }
 });
@@ -289,10 +361,10 @@ router.post("/", authMiddleware, async (req: AuthedRequest, res) => {
 // ───────────────────────── Get single company (with totals) ─────────────────────────
 // GET /companies/:id
 router.get("/:id", async (req, res) => {
-    try {
-        const { id } = req.params;
+  try {
+    const { id } = req.params;
 
-        const sql = `
+    const sql = `
       SELECT
         c.*,
 
@@ -305,7 +377,25 @@ router.get("/:id", async (req, res) => {
         -- credit totals (same as list)
         COALESCE(t.to_date_issued, 0)::text  AS to_date_issued,
         COALESCE(t.to_date_offtake, 0)::text AS to_date_offtake,
-        COALESCE(t.to_date_retired, 0)::text AS to_date_retired
+        COALESCE(t.to_date_retired, 0)::text AS to_date_retired,
+
+        -- owner profile (optional; aligned with list + frontend)
+        up.user_id            AS owner_profile_id,
+        up.full_name          AS owner_full_name,
+        up.headline           AS owner_headline,
+        up.country            AS owner_country,
+        up.city               AS owner_city,
+        up.role_type          AS owner_role_type,
+        up.show_contact_email AS owner_show_contact_email,
+        up.contact_email      AS owner_contact_email,
+        up.show_phone         AS owner_show_phone,
+        up.phone_number       AS owner_phone_number,
+
+        (
+          SELECT COUNT(*)::int
+          FROM company_documents d
+          WHERE d.company_id = c.id
+        ) AS document_count
 
       FROM companies c
 
@@ -328,33 +418,37 @@ router.get("/:id", async (req, res) => {
       LEFT JOIN v_company_credit_totals t
         ON t.company_id = c.id
 
+      LEFT JOIN user_profiles up
+        ON up.user_id = c.owner_user_id
+       AND up.delete_flag = false
+       AND up.is_public = true
+
       WHERE c.id = $1
         AND c.delete_flag = false
       LIMIT 1
     `;
 
-        const { rows } = await query(sql, [id]);
-        const row = rows[0];
+    const { rows } = await query(sql, [id]);
+    const row = rows[0];
 
-        if (!row) {
-            return res.status(404).json({ error: "not_found" });
-        }
-
-        const company = {
-            ...row,
-            cover_asset_url: toPublicAssetUrl({
-                asset_url: row.cover_asset_url,
-                s3_key: row.cover_s3_key,
-            }),
-        };
-
-        res.json(company);
-    } catch (err) {
-        console.error("GET /companies/:id error", err);
-        res.status(500).json({ error: "internal_error" });
+    if (!row) {
+      return res.status(404).json({ error: "not_found" });
     }
-});
 
+    const company = {
+      ...row,
+      cover_asset_url: toPublicAssetUrl({
+        asset_url: row.cover_asset_url,
+        s3_key: row.cover_s3_key,
+      }),
+    };
+
+    res.json(company);
+  } catch (err) {
+    console.error("GET /companies/:id error", err);
+    res.status(500).json({ error: "internal_error" });
+  }
+});
 // ───────────────────────── Update company ─────────────────────────
 // PATCH /companies/:id
 router.patch("/:id", async (req, res) => {
@@ -564,7 +658,7 @@ async function requireCompanyAccess(companyId: string, userId: string) {
 // --- Company media (images/videos) ---------------------------------
 
 // GET /companies/:id/media
-router.get("/:id/media", authMiddleware, async (req: AuthedRequest, res) => {
+router.get("/:id/media", async (req: AuthedRequest, res) => {
     try {
         const { id } = req.params;
 

@@ -1,44 +1,78 @@
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
-import authRoutes from "./routes/auth.js";
+import cookieParser from "cookie-parser";
+
+import { pool } from "./db/connection.js";
 import userRoutes from "./routes/user.js";
 import companyRoutes from "./routes/company.js";
 import projectRoutes from "./routes/project.js";
+import companyClaimRoutes from "./routes/companyClaim.js";
+import { AuthController } from "./auth/authController.js";
+import { AuthService } from "./auth/authService.js";
+import { mailer } from "./auth/mailer.js";
+import { buildAuthRoutes } from "./auth/authRoutes.js";
+import { authRepoPg } from "./auth/authRepoPg.js";
+import { createOnboardingRoutes } from "./onboarding/onboardingRoutes.js";
+import { attachCurrentUser } from "./middleware/attachCurrentUser.js";
+import { createCompanyRoutes } from "./companies/companyRoutes.js";
+import { createProjectRoutes } from "./projects/projectRoutes.js";
+import { createSavedItemRoutes } from "./savedItems/savedItemRoutes.js";
+import { buildAccountRouter} from "./account/accountRoutes.js"
+import { buildUserRouter } from "./user/userRoutes.js";
 
 const app = express();
-const port = process.env.PORT || 4000;
+const port = process.env.PORT || 3000;
+
+const authService = new AuthService(
+    authRepoPg,
+    mailer,
+    process.env.OTP_SECRET!,
+    process.env.SESSION_SECRET!,
+    process.env.GOOGLE_CLIENT_ID!,
+);
+
+const authController = new AuthController(
+    authService,
+    process.env.SESSION_SECRET!
+);
 
 const allowlist = new Set([
-  "http://localhost:5173",
-  "http://localhost:3000",
-  "https://preview.thecarboneconomy.org" // your CloudFront domain
+    "http://localhost:5173",
+    "http://localhost:3000",
+    "https://preview.thecarboneconomy.org",
 ]);
 
 const corsOptions: cors.CorsOptions = {
-  origin: (origin, cb) => {
-    console.log("CORS origin:", origin);
-    if (!origin || allowlist.has(origin)) {
-      return cb(null, true); // allow
-    }
-    return cb(null, false); // disallow (no CORS headers)
-  },
-  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Authorization", "Content-Type"],
-  credentials: false, // since you removed credentials: 'include'
+    origin: (origin, cb) => {
+        console.log("CORS origin:", origin);
+        if (!origin || allowlist.has(origin)) {
+            return cb(null, true);
+        }
+        return cb(null, false);
+    },
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Authorization", "Content-Type"],
+    credentials: true,
 };
 
-// CORS MUST be before routes
 app.use(cors(corsOptions));
-
 app.use(express.json());
+app.use(cookieParser());
+app.use(attachCurrentUser(authService, process.env.SESSION_SECRET!));
 
 app.get("/health", (_req, res) => res.json({ ok: true }));
-app.use("/auth", authRoutes);
-app.use("/users", userRoutes);
-app.use("/companies", companyRoutes);
-app.use("/projects", projectRoutes);
+
+app.use("/auth", buildAuthRoutes(authController));
+app.use("/user-profiles", createOnboardingRoutes(pool));
+app.use("/companies", createCompanyRoutes(pool));
+app.use("/projects", createProjectRoutes(pool));
+app.use("/saved-items", createSavedItemRoutes(pool));
+app.use("/users", buildUserRouter(pool));
+app.use("/account", buildAccountRouter(pool))
+// app.use("/companies", companyRoutes);
+app.use("/companyClaims", companyClaimRoutes);
 
 app.listen(port, () => {
-  console.log(`API listening on port ${port}`);
+    console.log(`API listening on port ${port}`);
 });

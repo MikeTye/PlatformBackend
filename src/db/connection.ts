@@ -1,6 +1,6 @@
 import { Pool, type QueryResultRow } from "pg";
 
-const pool = new Pool({
+export const pool = new Pool({
   host: process.env.DB_HOST,         // carbon-mvp-db.xxxxxx.ap-southeast-1.rds.amazonaws.com
   port: Number(process.env.DB_PORT) || 5432,
   user: process.env.DB_USER,         // app_user
