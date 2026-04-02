@@ -51,11 +51,30 @@ type ListSavedItemsResult = {
             certifications: string[];
         };
     }>;
-    opportunities: Array<never>;
+    opportunities: Array<{
+        entityType: "opportunity";
+        savedAt: string;
+        opportunity: {
+            id: string;
+            projectId: string;
+            type: string;
+            description: string;
+            urgent: boolean;
+            sortOrder: number;
+            isActive: boolean;
+            projectName: string;
+            projectUpid: string | null;
+            developer: string;
+            stage: string | null;
+            country: string | null;
+            countryCode: string | null;
+            isMine: boolean;
+        };
+    }>;
 };
 
 export class SavedItemService {
-    constructor(private readonly db: Pool) {}
+    constructor(private readonly db: Pool) { }
 
     private async assertEntityExists(
         entityType: SavedEntityType,
@@ -95,6 +114,31 @@ export class SavedItemService {
             if (!result.rows[0]) {
                 throw new Error("Company not found");
             }
+
+            return;
+        }
+
+        if (entityType === "opportunity") {
+            const result = await this.db.query<{ id: string }>(
+                `
+                SELECT po.id
+                FROM project_opportunities po
+                INNER JOIN projects p
+                    ON p.id = po.project_id
+                WHERE po.id = $1
+                  AND COALESCE(po.delete_flag, false) = false
+                  AND COALESCE(po.is_active, true) = true
+                  AND COALESCE(p.delete_flag, false) = false
+                LIMIT 1
+                `,
+                [entityId]
+            );
+
+            if (!result.rows[0]) {
+                throw new Error("Opportunity not found");
+            }
+
+            return;
         }
     }
 
@@ -116,7 +160,7 @@ export class SavedItemService {
                     p.id,
                     p.upid,
                     COALESCE(NULLIF(TRIM(p.name), ''), 'Untitled Project') AS name,
-                    COALESCE(c.legal_name, 'Unknown Developer') AS developer,
+                    COALESCE(c.display_name, 'Unknown Developer') AS developer,
                     p.description,
                     p.stage,
                     p.project_type AS type,
@@ -152,7 +196,7 @@ export class SavedItemService {
                     type: row.type,
                     country: row.country,
                     countryCode: row.country_code,
-                    hectares: row.hectares,
+                    hectares: row.hectares ?? null,
                     expectedCredits: row.expected_credits,
                     freshness: null,
                     verifiedFields: 0,
@@ -169,7 +213,7 @@ export class SavedItemService {
                 SELECT
                     usi.created_at AS saved_at,
                     c.id,
-                    c.legal_name,
+                    c.display_name,
                     COALESCE(c.function_description, '') AS description,
                     COALESCE(c.primary_country, '') AS country,
                     COALESCE(c.country_code, '') AS country_code,
@@ -207,7 +251,7 @@ export class SavedItemService {
                 savedAt: row.saved_at,
                 company: {
                     id: row.id,
-                    name: row.legal_name,
+                    name: row.display_name,
                     type: row.type,
                     description: row.description,
                     country: row.country,
@@ -219,6 +263,65 @@ export class SavedItemService {
                     servicesCount: 0,
                     serviceTypes: [],
                     certifications: [],
+                },
+            }));
+        }
+
+        if (entityType === "all" || entityType === "opportunity") {
+            const opportunitiesRes = await this.db.query(
+                `
+                SELECT
+                    usi.created_at AS saved_at,
+                    po.id,
+                    po.project_id,
+                    po.opportunity_type,
+                    po.description,
+                    po.is_priority,
+                    po.sort_order,
+                    po.is_active,
+                    p.name AS project_name,
+                    p.upid AS project_upid,
+                    p.stage,
+                    p.host_country AS country,
+                    p.host_country_code AS country_code,
+                    COALESCE(c.display_name, 'Unknown Developer') AS developer,
+                    (p.owner_user_id = $1) AS is_mine
+                FROM user_saved_items usi
+                INNER JOIN project_opportunities po
+                    ON po.id = usi.entity_id
+                INNER JOIN projects p
+                    ON p.id = po.project_id
+                LEFT JOIN companies c
+                    ON c.id = p.company_id
+                   AND COALESCE(c.delete_flag, false) = false
+                WHERE usi.user_id = $1
+                  AND usi.entity_type = 'opportunity'
+                  AND COALESCE(po.delete_flag, false) = false
+                  AND COALESCE(po.is_active, true) = true
+                  AND COALESCE(p.delete_flag, false) = false
+                ORDER BY usi.created_at DESC, po.sort_order ASC, po.created_at DESC
+                `,
+                [userId]
+            );
+
+            result.opportunities = opportunitiesRes.rows.map((row: any) => ({
+                entityType: "opportunity",
+                savedAt: row.saved_at,
+                opportunity: {
+                    id: row.id,
+                    projectId: row.project_id,
+                    type: row.opportunity_type,
+                    description: row.description,
+                    urgent: row.is_priority,
+                    sortOrder: row.sort_order,
+                    isActive: row.is_active,
+                    projectName: row.project_name,
+                    projectUpid: row.project_upid,
+                    developer: row.developer,
+                    stage: row.stage,
+                    country: row.country,
+                    countryCode: row.country_code,
+                    isMine: row.is_mine,
                 },
             }));
         }

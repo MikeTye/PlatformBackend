@@ -5,33 +5,67 @@ import type { Mailer } from "./mailer.js";
 
 export type AuthIntent = "login" | "signup";
 
+type InviteResolution = {
+    inviteLinkId: string;
+    companyId: string;
+    companySlug?: string | null;
+    companyDisplayName?: string | null;
+    isActive: boolean;
+};
+
+type InviteRedirectInfo = {
+    companyId: string;
+    companySlug?: string | null;
+    redirectTo: string;
+};
+
 type RequestCodeInput = {
     email: string;
     intent: AuthIntent;
-    ip?: string | undefined | null;
-    userAgent?: string | null;
+    companyInviteToken?: string | null | undefined;
+    ip?: string | null | undefined;
+    userAgent?: string | null | undefined;
+    referrer?: string | null | undefined;
 };
 
 type VerifyCodeInput = {
     email: string;
     code: string;
     intent: AuthIntent;
-    name?: string | null;
-    ip?: string | undefined | null;
-    userAgent?: string | null;
+    name?: string | null | undefined;
+    companyInviteToken?: string | null | undefined;
+    ip?: string | null | undefined;
+    userAgent?: string | null | undefined;
+    referrer?: string | null | undefined;
 };
 
 type GoogleSignInInput = {
     credential: string;
     intent: AuthIntent;
-    ip?: string | undefined | null;
-    userAgent?: string | undefined | null;
+    agreedToTerms?: boolean | null | undefined;
+    companyInviteToken?: string | null | undefined;
+    ip?: string | null | undefined;
+    userAgent?: string | null | undefined;
+    referrer?: string | null | undefined;
 };
 
 type AuthSuccessResult = {
     user: AuthUser;
     sessionToken: string;
     sessionExpiresAt: Date;
+    invite?: InviteRedirectInfo | null;
+};
+
+type InvitePreviewResult = {
+    ok: true;
+    company: {
+        id: string;
+        slug?: string | null;
+        displayName?: string | null;
+    };
+    invite: {
+        token: string;
+    };
 };
 
 type RequestCodeResult =
@@ -43,7 +77,7 @@ type RequestCodeResult =
     }
     | {
         ok: false;
-        status: "signup_required" | "account_exists";
+        status: "signup_required" | "account_exists" | "invalid_invite";
         intent: AuthIntent;
         message: string;
     };
@@ -97,6 +131,20 @@ export class AuthService {
 
     async requestCode(input: RequestCodeInput): Promise<RequestCodeResult> {
         const email = normalizeEmail(input.email);
+
+        let invite: InviteResolution | null = null;
+        if (input.companyInviteToken?.trim()) {
+            invite = await this.resolveInviteOrThrow(input.companyInviteToken);
+            await this.logInviteEvent(invite, {
+                eventType: "request_code",
+                email,
+                ip: input.ip,
+                userAgent: input.userAgent,
+                referrer: input.referrer,
+                metadata: { intent: input.intent },
+            });
+        }
+
         const user = await this.repo.findUserByEmail(email);
 
         if (input.intent === "login" && !user) {
@@ -151,6 +199,10 @@ export class AuthService {
         const email = normalizeEmail(input.email);
         const expectedHash = hashOtpCode(email, input.code, this.otpSecret);
 
+        const invite = input.companyInviteToken?.trim()
+            ? await this.resolveInviteOrThrow(input.companyInviteToken)
+            : null;
+
         const otpResult = await this.repo.verifyAndConsumeOtp(email, expectedHash);
 
         if (!otpResult.ok) {
@@ -176,11 +228,27 @@ export class AuthService {
                 user = { ...user, email_verified: true };
             }
 
-            return this.createSessionForUser({
+            const session = await this.createSessionForUser({
                 user,
                 ip: input.ip,
                 userAgent: input.userAgent,
             });
+
+            const inviteInfo = invite
+                ? await this.consumeCompanyInviteForUser(invite, {
+                    userId: user.id,
+                    email,
+                    ip: input.ip,
+                    userAgent: input.userAgent,
+                    referrer: input.referrer,
+                    source: "email_verify_login",
+                })
+                : null;
+
+            return {
+                ...session,
+                invite: inviteInfo,
+            };
         }
 
         if (user) {
@@ -197,14 +265,40 @@ export class AuthService {
             avatarUrl: null,
         });
 
-        return this.createSessionForUser({
+        const session = await this.createSessionForUser({
             user,
             ip: input.ip,
             userAgent: input.userAgent,
         });
+
+        const inviteInfo = invite
+            ? await this.consumeCompanyInviteForUser(invite, {
+                userId: user.id,
+                email,
+                ip: input.ip,
+                userAgent: input.userAgent,
+                referrer: input.referrer,
+                source: "email_verify_signup",
+            })
+            : null;
+
+        return {
+            ...session,
+            invite: inviteInfo,
+        };
     }
 
     async signInWithGoogle(input: GoogleSignInInput): Promise<AuthSuccessResult> {
+        if (input.intent === "signup" && input.agreedToTerms !== true) {
+            throw Object.assign(
+                new Error("You must agree to the Terms & Conditions before signing up."),
+                {
+                    status: 400,
+                    code: "TERMS_REQUIRED",
+                }
+            );
+        }
+
         const googleUser = await this.verifyGoogleCredential(input.credential);
 
         if (!googleUser.emailVerified) {
@@ -212,6 +306,10 @@ export class AuthService {
                 status: 401,
             });
         }
+
+        const invite = input.companyInviteToken?.trim()
+            ? await this.resolveInviteOrThrow(input.companyInviteToken)
+            : null;
 
         const email = normalizeEmail(googleUser.email);
         let user = await this.repo.findUserByEmail(email);
@@ -273,11 +371,30 @@ export class AuthService {
             };
         }
 
-        return this.createSessionForUser({
+        const session = await this.createSessionForUser({
             user,
             ip: input.ip,
             userAgent: input.userAgent,
         });
+
+        const inviteInfo = invite
+            ? await this.consumeCompanyInviteForUser(invite, {
+                userId: user.id,
+                email,
+                ip: input.ip,
+                userAgent: input.userAgent,
+                referrer: input.referrer,
+                source:
+                    input.intent === "signup"
+                        ? "google_signup"
+                        : "google_login",
+            })
+            : null;
+
+        return {
+            ...session,
+            invite: inviteInfo,
+        };
     }
 
     async getSessionUser(sessionTokenHash: string) {
@@ -321,9 +438,88 @@ export class AuthService {
             user: input.user,
             sessionToken: rawSessionToken,
             sessionExpiresAt: expiresAt,
+            invite: null,
         };
     }
 
+    private async resolveInviteOrThrow(token: string): Promise<InviteResolution> {
+        const invite = await this.repo.findActiveCompanyInviteByToken(token.trim());
+
+        if (!invite || !invite.isActive) {
+            throw Object.assign(new Error("This company invite link is invalid."), {
+                status: 400,
+                code: "INVALID_COMPANY_INVITE",
+            });
+        }
+
+        return invite;
+    }
+
+    private async consumeCompanyInviteForUser(
+        invite: InviteResolution,
+        input: {
+            userId: string;
+            email: string;
+            ip?: string | undefined | null;
+            userAgent?: string | undefined | null;
+            referrer?: string | undefined | null;
+            source: string;
+        }
+    ): Promise<InviteRedirectInfo> {
+        await this.repo.addCompanyUserIfMissing({
+            companyId: invite.companyId,
+            userId: input.userId,
+            permission: "viewer",
+            role: null,
+        });
+
+        await this.logInviteEvent(invite, {
+            eventType: "joined",
+            invitedUserId: input.userId,
+            email: input.email,
+            ip: input.ip,
+            userAgent: input.userAgent,
+            referrer: input.referrer,
+            metadata: {
+                source: input.source,
+                permission: "viewer",
+            },
+        });
+
+        return {
+            companyId: invite.companyId,
+            companySlug: invite.companySlug ?? null,
+            redirectTo: invite.companySlug
+                ? `/companies/${encodeURIComponent(invite.companySlug)}`
+                : `/companies/${encodeURIComponent(invite.companyId)}`,
+        };
+    }
+
+    private async logInviteEvent(
+        invite: InviteResolution,
+        input: {
+            eventType: string;
+            invitedUserId?: string | null;
+            email?: string | null;
+            ip?: string | undefined | null;
+            userAgent?: string | undefined | null;
+            referrer?: string | null | undefined;
+            metadata?: Record<string, unknown>;
+        }
+    ): Promise<void> {
+        await this.repo.insertCompanyInviteEvent({
+            inviteLinkId: invite.inviteLinkId,
+            companyId: invite.companyId,
+            eventType: input.eventType,
+            invitedUserId: input.invitedUserId ?? null,
+            email: input.email ?? null,
+            sessionKey: null,
+            ipAddress: input.ip ?? null,
+            userAgent: input.userAgent ?? null,
+            referrer: input.referrer ?? null,
+            metadata: input.metadata ?? {},
+        });
+    }
     private async verifyGoogleCredential(
         credential: string
     ): Promise<VerifiedGoogleUser> {
@@ -355,6 +551,38 @@ export class AuthService {
             name: payload.name,
             picture: payload.picture,
             hostedDomain: payload.hd,
+        };
+    }
+
+    async previewCompanyInvite(token: string): Promise<InvitePreviewResult> {
+        const normalizedToken = token.trim();
+
+        if (!normalizedToken) {
+            throw Object.assign(new Error("Missing company invite token."), {
+                status: 400,
+                code: "INVALID_COMPANY_INVITE",
+            });
+        }
+
+        const invite = await this.repo.previewCompanyInviteByToken(normalizedToken);
+
+        if (!invite || !invite.isActive) {
+            throw Object.assign(new Error("This invite link is invalid."), {
+                status: 400,
+                code: "INVALID_COMPANY_INVITE",
+            });
+        }
+
+        return {
+            ok: true,
+            company: {
+                id: invite.companyId,
+                slug: invite.companySlug ?? null,
+                displayName: invite.companyDisplayName ?? null,
+            },
+            invite: {
+                token: invite.token,
+            },
         };
     }
 }

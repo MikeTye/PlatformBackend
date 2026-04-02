@@ -1076,7 +1076,7 @@ router.get("/:id/share", async (req, res) => {
     const mediaItems = await fetchProjectMediaByProjectId(id);
 
     const name = project.name || "Project Details";
-    const status = project.status || "Planned";
+    const status = project.status || "Exploration";
     const projectType = project.project_type || project.projectType || "-";
     const sector = project.sector || "-";
     const hostCountry = project.host_country || project.hostCountry || "-";

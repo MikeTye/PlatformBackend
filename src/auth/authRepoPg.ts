@@ -1,5 +1,5 @@
 import { query } from "../db/connection.js";
-import type { AuthRepo, AuthUser, VerifyAndConsumeOtpResult } from "./authRepo.js";
+import type { AuthRepo, AuthUser, CompanyInviteLookup, CompanyInvitePreview, VerifyAndConsumeOtpResult } from "./authRepo.js";
 
 type IdRow = { id: string };
 
@@ -255,4 +255,133 @@ export const authRepoPg: AuthRepo = {
             [sessionId]
         );
     },
+
+    async findActiveCompanyInviteByToken(token: string): Promise<CompanyInviteLookup | null> {
+        const sql = `
+    select
+      cil.id as invite_link_id,
+      cil.company_id,
+      cil.is_active,
+      c.display_name
+    from company_invite_links cil
+    join companies c on c.id = cil.company_id
+    where cil.token = $1
+      and cil.is_active = true
+    limit 1
+  `;
+
+        const { rows } = await query(sql, [token]);
+
+        if (!rows[0]) return null;
+
+        return {
+            inviteLinkId: rows[0].invite_link_id,
+            companyId: rows[0].company_id,
+            companySlug: rows[0].slug ?? null,
+            companyDisplayName: rows[0].display_name ?? null,
+            isActive: rows[0].is_active,
+        };
+    },
+
+    async addCompanyUserIfMissing(input: {
+        companyId: string;
+        userId: string;
+        permission: string;
+        role?: string | null;
+    }): Promise<void> {
+        const sql = `
+    insert into company_users (
+      company_id,
+      user_id,
+      permission,
+      role,
+      delete_flag,
+      created_at,
+      updated_at
+    )
+    values ($1, $2, $3, $4, false, now(), now())
+    on conflict (company_id, user_id)
+    do update set
+      delete_flag = false,
+      permission = excluded.permission,
+      updated_at = now()
+  `;
+
+        await query(sql, [
+            input.companyId,
+            input.userId,
+            input.permission,
+            input.role ?? null,
+        ]);
+    },
+
+    async insertCompanyInviteEvent(input: {
+        inviteLinkId: string;
+        companyId: string;
+        eventType: string;
+        invitedUserId?: string | null;
+        email?: string | null;
+        sessionKey?: string | null;
+        ipAddress?: string | null;
+        userAgent?: string | null;
+        referrer?: string | null;
+        metadata?: Record<string, unknown>;
+    }): Promise<void> {
+        const sql = `
+    insert into company_invite_events (
+      invite_link_id,
+      company_id,
+      event_type,
+      invited_user_id,
+      email,
+      session_key,
+      ip_address,
+      user_agent,
+      referrer,
+      metadata
+    )
+    values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)
+  `;
+
+        await query(sql, [
+            input.inviteLinkId,
+            input.companyId,
+            input.eventType,
+            input.invitedUserId ?? null,
+            input.email ?? null,
+            input.sessionKey ?? null,
+            input.ipAddress ?? null,
+            input.userAgent ?? null,
+            input.referrer ?? null,
+            JSON.stringify(input.metadata ?? {}),
+        ]);
+    },
+
+    async previewCompanyInviteByToken(token: string): Promise<CompanyInvitePreview | null> {
+        const sql = `
+            select
+              cil.token,
+              cil.company_id,
+              cil.is_active,
+              c.display_name
+            from company_invite_links cil
+            join companies c on c.id = cil.company_id
+            where cil.token = $1
+              and cil.is_active = true
+              and coalesce(c.delete_flag, false) = false
+            limit 1
+        `;
+
+        const { rows } = await query(sql, [token.trim()]);
+
+        if (!rows[0]) return null;
+
+        return {
+            token: rows[0].token,
+            companyId: rows[0].company_id,
+            companySlug: rows[0].slug ?? null,
+            companyDisplayName: rows[0].display_name ?? null,
+            isActive: rows[0].is_active,
+        };
+    }
 };

@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const SavedEntityTypeSchema = z.enum(["project", "company"]);
+export const SavedEntityTypeSchema = z.enum(["project", "company", "opportunity"]);
 
 export const SaveItemSchema = z.object({
     entityType: SavedEntityTypeSchema,

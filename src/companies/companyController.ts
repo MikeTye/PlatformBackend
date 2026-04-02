@@ -2,7 +2,13 @@ import type { Response, NextFunction, Request } from "express";
 import type { RequestWithUser } from "../middleware/attachCurrentUser.js";
 import { CreateCompanySchema, ListCompaniesQuerySchema } from "./schema.js";
 import { CompanyService } from "./companyService.js";
-import { uploadCompanyLogo } from "../lib/s3Media.js";
+import {
+    uploadCompanyLogo,
+    promoteOnboardingCompanyLogo,
+    getUploadUrlForCompanyMedia,
+    getUploadUrlForCompanyDocument,
+    deleteObjectByKey,
+} from "../lib/s3Media.js";
 import { z } from "zod";
 import {
     GetCompanyDetailParamsSchema,
@@ -19,6 +25,12 @@ function parseJsonArray(value: unknown): string[] {
     } catch {
         return [];
     }
+}
+
+function getFileExt(fileName: string): string {
+    const trimmed = fileName.trim();
+    if (!trimmed.includes(".")) return "bin";
+    return trimmed.split(".").pop() || "bin";
 }
 
 const UpdateCompanyParamsSchema = z.object({
@@ -197,10 +209,43 @@ export class CompanyController {
                     metadata: {
                         originalName: req.file.originalname,
                         size: req.file.size,
+                        source: "direct-create",
                     },
                 });
 
                 logoUrl = uploaded.assetUrl;
+            } else if (typeof req.body.onboardingLogoTempKey === "string" && req.body.onboardingLogoTempKey.trim()) {
+                const promoted = await promoteOnboardingCompanyLogo({
+                    tempKey: req.body.onboardingLogoTempKey.trim(),
+                    companyId: company.id,
+                    contentType:
+                        typeof req.body.onboardingLogoContentType === "string"
+                            ? req.body.onboardingLogoContentType
+                            : null,
+                });
+
+                await this.companyService.saveCompanyLogo({
+                    companyId: company.id,
+                    assetUrl: promoted.assetUrl,
+                    contentType:
+                        typeof req.body.onboardingLogoContentType === "string"
+                            ? req.body.onboardingLogoContentType
+                            : null,
+                    s3Key: promoted.key,
+                    sha256:
+                        typeof req.body.onboardingLogoSha256 === "string"
+                            ? req.body.onboardingLogoSha256
+                            : null,
+                    metadata: {
+                        originalName:
+                            typeof req.body.onboardingLogoOriginalName === "string"
+                                ? req.body.onboardingLogoOriginalName
+                                : null,
+                        source: "onboarding-temp-promote",
+                    },
+                });
+
+                logoUrl = promoted.assetUrl;
             }
 
             return res.status(201).json({
@@ -420,6 +465,230 @@ export class CompanyController {
                 ok: true,
                 data: invite,
             });
+        } catch (err) {
+            return next(err);
+        }
+    };
+
+    getCompanyMediaUploadUrl = async (
+        req: RequestWithUser & Request,
+        res: Response,
+        next: NextFunction
+    ) => {
+        try {
+            const userId = req.user?.userId;
+            if (!userId) {
+                return res.status(401).json({ ok: false, error: "Unauthorized" });
+            }
+
+            const { companyId } = UpdateCompanyParamsSchema.parse(req.params);
+            const fileName = typeof req.query.fileName === "string" ? req.query.fileName : "";
+            const contentType = typeof req.query.contentType === "string" ? req.query.contentType : "";
+
+            if (!fileName.trim() || !contentType.trim()) {
+                return res.status(400).json({ ok: false, error: "fileName and contentType are required" });
+            }
+
+            const upload = await getUploadUrlForCompanyMedia(
+                companyId,
+                getFileExt(fileName),
+                contentType
+            );
+
+            return res.status(200).json({ ok: true, data: upload });
+        } catch (err) {
+            return next(err);
+        }
+    };
+
+    getCompanyDocumentUploadUrl = async (
+        req: RequestWithUser & Request,
+        res: Response,
+        next: NextFunction
+    ) => {
+        try {
+            const userId = req.user?.userId;
+            if (!userId) {
+                return res.status(401).json({ ok: false, error: "Unauthorized" });
+            }
+
+            const { companyId } = UpdateCompanyParamsSchema.parse(req.params);
+            const fileName = typeof req.query.fileName === "string" ? req.query.fileName : "";
+            const contentType = typeof req.query.contentType === "string" ? req.query.contentType : "";
+
+            if (!fileName.trim() || !contentType.trim()) {
+                return res.status(400).json({ ok: false, error: "fileName and contentType are required" });
+            }
+
+            const upload = await getUploadUrlForCompanyDocument(
+                companyId,
+                getFileExt(fileName),
+                contentType
+            );
+
+            return res.status(200).json({ ok: true, data: upload });
+        } catch (err) {
+            return next(err);
+        }
+    };
+
+    createCompanyMedia = async (
+        req: RequestWithUser & Request,
+        res: Response,
+        next: NextFunction
+    ) => {
+        try {
+            const userId = req.user?.userId;
+            if (!userId) {
+                return res.status(401).json({ ok: false, error: "Unauthorized" });
+            }
+
+            const { companyId } = UpdateCompanyParamsSchema.parse(req.params);
+
+            const company = await this.companyService.createCompanyMedia(companyId, userId, {
+                kind: typeof req.body.kind === "string" ? req.body.kind : "gallery",
+                assetUrl: String(req.body.assetUrl ?? "").trim(),
+                contentType: typeof req.body.contentType === "string" ? req.body.contentType : null,
+                s3Key: typeof req.body.s3Key === "string" ? req.body.s3Key : null,
+                sha256: typeof req.body.sha256 === "string" ? req.body.sha256 : null,
+                caption: typeof req.body.caption === "string" ? req.body.caption : null,
+                isCover: Boolean(req.body.isCover),
+                metadata: typeof req.body.metadata === "object" && req.body.metadata !== null ? req.body.metadata : {},
+            });
+
+            return res.status(200).json({ ok: true, data: company });
+        } catch (err) {
+            return next(err);
+        }
+    };
+
+    updateCompanyMedia = async (
+        req: RequestWithUser & Request,
+        res: Response,
+        next: NextFunction
+    ) => {
+        try {
+            const userId = req.user?.userId;
+            if (!userId) {
+                return res.status(401).json({ ok: false, error: "Unauthorized" });
+            }
+
+            const { companyId } = UpdateCompanyParamsSchema.parse(req.params);
+            const mediaId = String(req.params.mediaId);
+
+            const company = await this.companyService.updateCompanyMedia(companyId, mediaId, userId, {
+                caption: typeof req.body.caption === "string" ? req.body.caption : undefined,
+                isCover: typeof req.body.isCover === "boolean" ? req.body.isCover : undefined,
+            });
+
+            return res.status(200).json({ ok: true, data: company });
+        } catch (err) {
+            return next(err);
+        }
+    };
+
+    deleteCompanyMedia = async (
+        req: RequestWithUser & Request,
+        res: Response,
+        next: NextFunction
+    ) => {
+        try {
+            const userId = req.user?.userId;
+            if (!userId) {
+                return res.status(401).json({ ok: false, error: "Unauthorized" });
+            }
+
+            const { companyId } = UpdateCompanyParamsSchema.parse(req.params);
+            const mediaId = String(req.params.mediaId);
+
+            const result = await this.companyService.deleteCompanyMedia(companyId, mediaId, userId);
+
+            if (result.s3Key) {
+                await deleteObjectByKey(result.s3Key);
+            }
+
+            return res.status(200).json({ ok: true, data: result.company });
+        } catch (err) {
+            return next(err);
+        }
+    };
+
+    createCompanyDocument = async (
+        req: RequestWithUser & Request,
+        res: Response,
+        next: NextFunction
+    ) => {
+        try {
+            const userId = req.user?.userId;
+            if (!userId) {
+                return res.status(401).json({ ok: false, error: "Unauthorized" });
+            }
+
+            const { companyId } = UpdateCompanyParamsSchema.parse(req.params);
+
+            const company = await this.companyService.createCompanyDocument(companyId, userId, {
+                kind: typeof req.body.kind === "string" ? req.body.kind : "general",
+                assetUrl: String(req.body.assetUrl ?? "").trim(),
+                contentType: typeof req.body.contentType === "string" ? req.body.contentType : null,
+                s3Key: typeof req.body.s3Key === "string" ? req.body.s3Key : null,
+                sha256: typeof req.body.sha256 === "string" ? req.body.sha256 : null,
+                name: typeof req.body.name === "string" ? req.body.name : null,
+                type: typeof req.body.type === "string" ? req.body.type : null,
+                metadata: typeof req.body.metadata === "object" && req.body.metadata !== null ? req.body.metadata : {},
+            });
+
+            return res.status(200).json({ ok: true, data: company });
+        } catch (err) {
+            return next(err);
+        }
+    };
+
+    updateCompanyDocument = async (
+        req: RequestWithUser & Request,
+        res: Response,
+        next: NextFunction
+    ) => {
+        try {
+            const userId = req.user?.userId;
+            if (!userId) {
+                return res.status(401).json({ ok: false, error: "Unauthorized" });
+            }
+
+            const { companyId } = UpdateCompanyParamsSchema.parse(req.params);
+            const documentId = String(req.params.documentId);
+
+            const company = await this.companyService.updateCompanyDocument(companyId, documentId, userId, {
+                name: typeof req.body.name === "string" ? req.body.name : undefined,
+                type: typeof req.body.type === "string" ? req.body.type : undefined,
+            });
+
+            return res.status(200).json({ ok: true, data: company });
+        } catch (err) {
+            return next(err);
+        }
+    };
+
+    deleteCompanyDocument = async (
+        req: RequestWithUser & Request,
+        res: Response,
+        next: NextFunction
+    ) => {
+        try {
+            const userId = req.user?.userId;
+            if (!userId) {
+                return res.status(401).json({ ok: false, error: "Unauthorized" });
+            }
+
+            const { companyId } = UpdateCompanyParamsSchema.parse(req.params);
+            const documentId = String(req.params.documentId);
+
+            const result = await this.companyService.deleteCompanyDocument(companyId, documentId, userId);
+
+            if (result.s3Key) {
+                await deleteObjectByKey(result.s3Key);
+            }
+
+            return res.status(200).json({ ok: true, data: result.company });
         } catch (err) {
             return next(err);
         }

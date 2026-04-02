@@ -18,11 +18,21 @@ import { attachCurrentUser } from "./middleware/attachCurrentUser.js";
 import { createCompanyRoutes } from "./companies/companyRoutes.js";
 import { createProjectRoutes } from "./projects/projectRoutes.js";
 import { createSavedItemRoutes } from "./savedItems/savedItemRoutes.js";
-import { buildAccountRouter} from "./account/accountRoutes.js"
+import { buildAccountRouter } from "./account/accountRoutes.js";
 import { buildUserRouter } from "./user/userRoutes.js";
+
+import { attachRequestId } from "./middleware/requestContext.js";
+import { ErrorLogRepo } from "./errorLogs/errorLogRepo.js";
+import { ErrorLogService } from "./errorLogs/errorLogService.js";
+import { createErrorLogRoutes } from "./errorLogs/errorLogRoutes.js";
+import { createErrorHandler } from "./middleware/errorHandler.js";
+import { registerProcessErrorHandlers } from "./errorLogs/processErrorHandler.js";
 
 const app = express();
 const port = process.env.PORT || 3000;
+
+const errorLogService = new ErrorLogService(new ErrorLogRepo(pool));
+registerProcessErrorHandlers(errorLogService);
 
 const authService = new AuthService(
     authRepoPg,
@@ -52,12 +62,13 @@ const corsOptions: cors.CorsOptions = {
         return cb(null, false);
     },
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Authorization", "Content-Type"],
+    allowedHeaders: ["Authorization", "Content-Type", "x-request-id"],
     credentials: true,
 };
 
 app.use(cors(corsOptions));
-app.use(express.json());
+app.use(attachRequestId);
+app.use(express.json({ limit: "1mb" }));
 app.use(cookieParser());
 app.use(attachCurrentUser(authService, process.env.SESSION_SECRET!));
 
@@ -69,9 +80,12 @@ app.use("/companies", createCompanyRoutes(pool));
 app.use("/projects", createProjectRoutes(pool));
 app.use("/saved-items", createSavedItemRoutes(pool));
 app.use("/users", buildUserRouter(pool));
-app.use("/account", buildAccountRouter(pool))
+app.use("/account", buildAccountRouter(pool));
+app.use("/error-logs", createErrorLogRoutes(pool));
 // app.use("/companies", companyRoutes);
 app.use("/companyClaims", companyClaimRoutes);
+
+app.use(createErrorHandler(errorLogService));
 
 app.listen(port, () => {
     console.log(`API listening on port ${port}`);

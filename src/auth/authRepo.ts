@@ -20,13 +20,29 @@ export interface AuthUser {
 
 export type VerifyAndConsumeOtpResult =
     | {
-          ok: true;
-          userId: string | null;
-      }
+        ok: true;
+        userId: string | null;
+    }
     | {
-          ok: false;
-          reason: "invalid" | "expired" | "too_many_attempts";
-      };
+        ok: false;
+        reason: "invalid" | "expired" | "too_many_attempts";
+    };
+
+export type CompanyInviteLookup = {
+    inviteLinkId: string;
+    companyId: string;
+    companySlug?: string | null;
+    companyDisplayName?: string | null;
+    isActive: boolean;
+};
+
+export type CompanyInvitePreview = {
+    token: string;
+    companyId: string;
+    companySlug?: string | null;
+    companyDisplayName?: string | null;
+    isActive: boolean;
+};
 
 export interface AuthRepo {
     findUserByEmail(email: string): Promise<AuthUser | null>;
@@ -39,7 +55,7 @@ export interface AuthRepo {
     }): Promise<AuthUser>;
     updateUserProfile(
         userId: string,
-        input: { name?: string | undefined| null; avatarUrl?: string | undefined | null }
+        input: { name?: string | undefined | null; avatarUrl?: string | undefined | null }
     ): Promise<void>;
     markEmailVerified(userId: string): Promise<void>;
     updateLastLogin(userId: string): Promise<void>;
@@ -69,4 +85,26 @@ export interface AuthRepo {
     } | null>;
 
     revokeSession(sessionId: string): Promise<void>;
+    findActiveCompanyInviteByToken(token: string): Promise<CompanyInviteLookup | null>;
+    previewCompanyInviteByToken(token: string): Promise<CompanyInvitePreview | null>;
+
+    addCompanyUserIfMissing(input: {
+        companyId: string;
+        userId: string;
+        permission: string;
+        role?: string | null;
+    }): Promise<void>;
+
+    insertCompanyInviteEvent(input: {
+        inviteLinkId: string;
+        companyId: string;
+        eventType: string;
+        invitedUserId?: string | null;
+        email?: string | null;
+        sessionKey?: string | null;
+        ipAddress?: string | null;
+        userAgent?: string | null;
+        referrer?: string | null;
+        metadata?: Record<string, unknown>;
+    }): Promise<void>;
 }

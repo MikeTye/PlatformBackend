@@ -34,10 +34,20 @@ export function createCompanyRoutes(db: Pool) {
     );
 
     router.get(
-        "/companies/:companyId/invite-link",
+        "/:companyId/invite-link",
         requireAuth,
         companyController.getOrCreateInviteLink
     );
-    
+
+    router.get("/:companyId/media/upload-url", requireAuth, companyController.getCompanyMediaUploadUrl);
+    router.post("/:companyId/media", requireAuth, companyController.createCompanyMedia);
+    router.patch("/:companyId/media/:mediaId", requireAuth, companyController.updateCompanyMedia);
+    router.delete("/:companyId/media/:mediaId", requireAuth, companyController.deleteCompanyMedia);
+
+    router.get("/:companyId/documents/upload-url", requireAuth, companyController.getCompanyDocumentUploadUrl);
+    router.post("/:companyId/documents", requireAuth, companyController.createCompanyDocument);
+    router.patch("/:companyId/documents/:documentId", requireAuth, companyController.updateCompanyDocument);
+    router.delete("/:companyId/documents/:documentId", requireAuth, companyController.deleteCompanyDocument);
+
     return router;
 }

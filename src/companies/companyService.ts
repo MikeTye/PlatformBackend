@@ -3,6 +3,7 @@ import type {
     CreateCompanyInput, ListCompaniesQuery, UpdateCompanyDetailInput,
     CompanyInviteLinkResponse,
 } from "./schema.js";
+import crypto from "crypto";
 
 export type CompanyRow = {
     id: string;
@@ -48,6 +49,28 @@ export type CompanyListSortField =
     | "country"
     | "projects"
     | "createdAt";
+
+export type CompanyAssetVisibility = "public" | "company_users";
+
+export type CompanyDetailMediaItem = {
+    id: string;
+    kind: string;
+    assetUrl: string;
+    contentType: string | null;
+    caption: string | null;
+    isCover: boolean;
+    createdAt: string;
+};
+
+export type CompanyDetailDocumentItem = {
+    id: string;
+    kind: string;
+    assetUrl: string;
+    contentType: string | null;
+    name: string | null;
+    type: string | null;
+    createdAt: string;
+};
 
 export type CompanyFacetOption = {
     value: string;
@@ -153,9 +176,7 @@ export type CompanyDetailResult = {
     projectsParticipated: CompanyDetailProjectItem[];
     services: string[];
     team: CompanyDetailTeamMember[];
-    media: unknown[];
     geographicalCoverage: string[];
-    documents: unknown[];
     permissions: Array<{
         id: string;
         userId: string;
@@ -167,6 +188,9 @@ export type CompanyDetailResult = {
     inheritCompanyPermissionsToProjects?: boolean;
     inviteToken?: string | null;
     externalInviteUrl?: string | null;
+
+    media: CompanyDetailMediaItem[];
+    documents: CompanyDetailDocumentItem[];
 };
 
 export type CompanyInviteLinkRow = {
@@ -874,6 +898,49 @@ SELECT json_build_object(
         FROM company_users_cte cu
         WHERE cu.permission IN ('creator', 'viewer')
         GROUP BY cu.company_id
+    ),
+    media_cte AS (
+    SELECT
+        cm.company_id,
+        json_agg(
+            json_build_object(
+                'id', cm.id,
+                'kind', cm.kind,
+                'url', cm.asset_url,
+                'assetUrl', cm.asset_url,
+                'contentType', cm.content_type,
+                'caption', COALESCE(NULLIF(cm.metadata->>'caption', ''), 'Media'),
+                'date', to_char(cm.created_at, 'DD Mon YYYY'),
+                'isCover', COALESCE(cm.is_cover, false),
+                'createdAt', cm.created_at
+            )
+            ORDER BY COALESCE(cm.is_cover, false) DESC, cm.created_at DESC
+        ) AS items
+    FROM company_media cm
+    JOIN target_company tc ON tc.id = cm.company_id
+    WHERE cm.kind <> 'logo'
+    GROUP BY cm.company_id
+    ),
+    documents_cte AS (
+        SELECT
+            cd.company_id,
+            json_agg(
+                json_build_object(
+                    'id', cd.id,
+                    'kind', cd.kind,
+                    'url', cd.asset_url,
+                    'assetUrl', cd.asset_url,
+                    'contentType', cd.content_type,
+                    'name', COALESCE(NULLIF(cd.metadata->>'name', ''), 'Document'),
+                    'type', COALESCE(NULLIF(cd.metadata->>'type', ''), cd.kind, 'Document'),
+                    'date', to_char(cd.created_at, 'DD Mon YYYY'),
+                    'createdAt', cd.created_at
+                )
+                ORDER BY cd.created_at DESC
+            ) AS items
+        FROM company_documents cd
+        JOIN target_company tc ON tc.id = cd.company_id
+        GROUP BY cd.company_id
     )
     SELECT json_build_object(
         'id', tc.id,
@@ -895,9 +962,9 @@ SELECT json_build_object(
         'projectsParticipated', '[]'::json,
         'services', COALESCE(tc.services, ARRAY[]::text[]),
         'team', COALESCE(tm.items, '[]'::json),
-        'media', '[]'::json,
+        'media', COALESCE(mc.items, '[]'::json),
+        'documents', COALESCE(dc.items, '[]'::json),
         'geographicalCoverage', COALESCE(tc.geographical_coverage, ARRAY[]::text[]),
-        'documents', '[]'::json,
         'permissions', COALESCE(pm.items, '[]'::json),
         'inheritCompanyPermissionsToProjects', COALESCE(tc.inherit_company_permissions_to_projects, false)
     ) AS result
@@ -906,6 +973,8 @@ SELECT json_build_object(
     LEFT JOIN projects_cte pc ON pc.company_id = tc.id
     LEFT JOIN team_cte tm ON tm.company_id = tc.id
     LEFT JOIN permissions_cte pm ON pm.company_id = tc.id
+    LEFT JOIN media_cte mc ON mc.company_id = tc.id
+    LEFT JOIN documents_cte dc ON dc.company_id = tc.id
     `;
 
         const result = await this.db.query<{ result: CompanyDetailResult }>(sql, [
@@ -1640,15 +1709,441 @@ SELECT json_build_object(
 
     private buildCompanyInviteUrl(token: string): string {
         const baseUrl =
-            process.env.APP_BASE_URL?.trim() ||
             process.env.FRONTEND_BASE_URL?.trim() ||
-            "http://localhost:3000";
+            "http://localhost:5173";
 
         return `${baseUrl.replace(/\/+$/, "")}/signup?companyInvite=${encodeURIComponent(token)}`;
     }
 
     private generateInviteToken(): string {
         return crypto.randomBytes(32).toString("base64url");
+    }
+
+    private async assertCanEditCompany(
+        companyId: string,
+        userId: string,
+        client: Pool | { query: Pool["query"] } = this.db
+    ): Promise<{ ownerUserId: string | null }> {
+        const accessCheck = await client.query<{
+            id: string;
+            owner_user_id: string | null;
+            user_permission: string | null;
+        }>(
+            `
+        SELECT
+            c.id,
+            c.owner_user_id,
+            (
+                SELECT cu.permission
+                FROM company_users cu
+                WHERE cu.company_id = c.id
+                  AND cu.user_id = $2
+                  AND COALESCE(cu.delete_flag, false) = false
+                ORDER BY CASE cu.permission WHEN 'creator' THEN 1 ELSE 2 END
+                LIMIT 1
+            ) AS user_permission
+        FROM companies c
+        WHERE c.id = $1
+          AND COALESCE(c.delete_flag, false) = false
+        LIMIT 1
+        `,
+            [companyId, userId]
+        );
+
+        const existing = accessCheck.rows[0];
+        if (!existing) {
+            throw new Error("Company not found");
+        }
+
+        const canEdit =
+            existing.owner_user_id === userId || existing.user_permission === "creator";
+
+        if (!canEdit) {
+            throw new Error("Forbidden");
+        }
+
+        return { ownerUserId: existing.owner_user_id };
+    }
+
+    async createCompanyMedia(
+        companyId: string,
+        userId: string,
+        input: {
+            kind?: string;
+            assetUrl: string;
+            contentType?: string | null;
+            s3Key?: string | null;
+            sha256?: string | null;
+            caption?: string | null;
+            isCover?: boolean;
+            metadata?: Record<string, unknown>;
+        }
+    ): Promise<CompanyDetailResult | null> {
+        const client = await this.db.connect();
+
+        try {
+            await client.query("BEGIN");
+            await this.assertCanEditCompany(companyId, userId, client);
+
+            if (input.isCover) {
+                await client.query(
+                    `
+                UPDATE company_media
+                SET is_cover = false
+                WHERE company_id = $1
+                  AND kind <> 'logo'
+                `,
+                    [companyId]
+                );
+            }
+
+            await client.query(
+                `
+            INSERT INTO company_media (
+                company_id,
+                kind,
+                asset_url,
+                content_type,
+                sha256,
+                metadata,
+                s3_key,
+                is_cover
+            )
+            VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8)
+            `,
+                [
+                    companyId,
+                    (input.kind?.trim() || "gallery"),
+                    input.assetUrl,
+                    input.contentType ?? null,
+                    input.sha256 ?? null,
+                    JSON.stringify({
+                        ...(input.metadata ?? {}),
+                        caption: input.caption?.trim() || null,
+                    }),
+                    input.s3Key ?? null,
+                    Boolean(input.isCover),
+                ]
+            );
+
+            await client.query(
+                `UPDATE companies SET updated_at = NOW() WHERE id = $1`,
+                [companyId]
+            );
+
+            await client.query("COMMIT");
+            return this.getCompanyDetail(companyId, userId);
+        } catch (error) {
+            await client.query("ROLLBACK");
+            throw error;
+        } finally {
+            client.release();
+        }
+    }
+
+    async updateCompanyMedia(
+        companyId: string,
+        mediaId: string,
+        userId: string,
+        input: {
+            caption?: string | null;
+            isCover?: boolean;
+        }
+    ): Promise<CompanyDetailResult | null> {
+        const client = await this.db.connect();
+
+        try {
+            await client.query("BEGIN");
+            await this.assertCanEditCompany(companyId, userId, client);
+
+            const existing = await client.query<{
+                id: string;
+                metadata: Record<string, unknown> | null;
+            }>(
+                `
+            SELECT id, metadata
+            FROM company_media
+            WHERE id = $1
+              AND company_id = $2
+              AND kind <> 'logo'
+            LIMIT 1
+            `,
+                [mediaId, companyId]
+            );
+
+            const row = existing.rows[0];
+            if (!row) {
+                throw new Error("Media not found");
+            }
+
+            if (input.isCover) {
+                await client.query(
+                    `
+                UPDATE company_media
+                SET is_cover = false
+                WHERE company_id = $1
+                  AND kind <> 'logo'
+                `,
+                    [companyId]
+                );
+            }
+
+            const nextMetadata = {
+                ...(row.metadata ?? {}),
+                ...(input.caption !== undefined ? { caption: input.caption?.trim() || null } : {}),
+            };
+
+            await client.query(
+                `
+            UPDATE company_media
+            SET
+                metadata = $3::jsonb,
+                is_cover = COALESCE($4, is_cover)
+            WHERE id = $1
+              AND company_id = $2
+            `,
+                [
+                    mediaId,
+                    companyId,
+                    JSON.stringify(nextMetadata),
+                    input.isCover ?? null,
+                ]
+            );
+
+            await client.query(
+                `UPDATE companies SET updated_at = NOW() WHERE id = $1`,
+                [companyId]
+            );
+
+            await client.query("COMMIT");
+            return this.getCompanyDetail(companyId, userId);
+        } catch (error) {
+            await client.query("ROLLBACK");
+            throw error;
+        } finally {
+            client.release();
+        }
+    }
+
+    async deleteCompanyMedia(
+        companyId: string,
+        mediaId: string,
+        userId: string
+    ): Promise<{ s3Key: string | null; company: CompanyDetailResult | null }> {
+        const client = await this.db.connect();
+
+        try {
+            await client.query("BEGIN");
+            await this.assertCanEditCompany(companyId, userId, client);
+
+            const existing = await client.query<{ s3_key: string | null }>(
+                `
+            DELETE FROM company_media
+            WHERE id = $1
+              AND company_id = $2
+              AND kind <> 'logo'
+            RETURNING s3_key
+            `,
+                [mediaId, companyId]
+            );
+
+            const row = existing.rows[0];
+            if (!row) {
+                throw new Error("Media not found");
+            }
+
+            await client.query(
+                `UPDATE companies SET updated_at = NOW() WHERE id = $1`,
+                [companyId]
+            );
+
+            await client.query("COMMIT");
+            return {
+                s3Key: row.s3_key,
+                company: await this.getCompanyDetail(companyId, userId),
+            };
+        } catch (error) {
+            await client.query("ROLLBACK");
+            throw error;
+        } finally {
+            client.release();
+        }
+    }
+
+    async createCompanyDocument(
+        companyId: string,
+        userId: string,
+        input: {
+            kind?: string;
+            assetUrl: string;
+            contentType?: string | null;
+            s3Key?: string | null;
+            sha256?: string | null;
+            name?: string | null;
+            type?: string | null;
+            metadata?: Record<string, unknown>;
+        }
+    ): Promise<CompanyDetailResult | null> {
+        const client = await this.db.connect();
+
+        try {
+            await client.query("BEGIN");
+            await this.assertCanEditCompany(companyId, userId, client);
+
+            await client.query(
+                `
+            INSERT INTO company_documents (
+                company_id,
+                kind,
+                asset_url,
+                content_type,
+                sha256,
+                metadata,
+                s3_key
+            )
+            VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)
+            `,
+                [
+                    companyId,
+                    input.kind?.trim() || "general",
+                    input.assetUrl,
+                    input.contentType ?? null,
+                    input.sha256 ?? null,
+                    JSON.stringify({
+                        ...(input.metadata ?? {}),
+                        name: input.name?.trim() || null,
+                        type: input.type?.trim() || null,
+                    }),
+                    input.s3Key ?? null,
+                ]
+            );
+
+            await client.query(
+                `UPDATE companies SET updated_at = NOW() WHERE id = $1`,
+                [companyId]
+            );
+
+            await client.query("COMMIT");
+            return this.getCompanyDetail(companyId, userId);
+        } catch (error) {
+            await client.query("ROLLBACK");
+            throw error;
+        } finally {
+            client.release();
+        }
+    }
+
+    async updateCompanyDocument(
+        companyId: string,
+        documentId: string,
+        userId: string,
+        input: {
+            name?: string | null;
+            type?: string | null;
+        }
+    ): Promise<CompanyDetailResult | null> {
+        const client = await this.db.connect();
+
+        try {
+            await client.query("BEGIN");
+            await this.assertCanEditCompany(companyId, userId, client);
+
+            const existing = await client.query<{
+                id: string;
+                metadata: Record<string, unknown> | null;
+            }>(
+                `
+            SELECT id, metadata
+            FROM company_documents
+            WHERE id = $1
+              AND company_id = $2
+            LIMIT 1
+            `,
+                [documentId, companyId]
+            );
+
+            const row = existing.rows[0];
+            if (!row) {
+                throw new Error("Document not found");
+            }
+
+            const nextMetadata = {
+                ...(row.metadata ?? {}),
+                ...(input.name !== undefined ? { name: input.name?.trim() || null } : {}),
+                ...(input.type !== undefined ? { type: input.type?.trim() || null } : {}),
+            };
+
+            await client.query(
+                `
+            UPDATE company_documents
+            SET metadata = $3::jsonb
+            WHERE id = $1
+              AND company_id = $2
+            `,
+                [
+                    documentId,
+                    companyId,
+                    JSON.stringify(nextMetadata),
+                ]
+            );
+
+            await client.query(
+                `UPDATE companies SET updated_at = NOW() WHERE id = $1`,
+                [companyId]
+            );
+
+            await client.query("COMMIT");
+            return this.getCompanyDetail(companyId, userId);
+        } catch (error) {
+            await client.query("ROLLBACK");
+            throw error;
+        } finally {
+            client.release();
+        }
+    }
+
+    async deleteCompanyDocument(
+        companyId: string,
+        documentId: string,
+        userId: string
+    ): Promise<{ s3Key: string | null; company: CompanyDetailResult | null }> {
+        const client = await this.db.connect();
+
+        try {
+            await client.query("BEGIN");
+            await this.assertCanEditCompany(companyId, userId, client);
+
+            const existing = await client.query<{ s3_key: string | null }>(
+                `
+            DELETE FROM company_documents
+            WHERE id = $1
+              AND company_id = $2
+            RETURNING s3_key
+            `,
+                [documentId, companyId]
+            );
+
+            const row = existing.rows[0];
+            if (!row) {
+                throw new Error("Document not found");
+            }
+
+            await client.query(
+                `UPDATE companies SET updated_at = NOW() WHERE id = $1`,
+                [companyId]
+            );
+
+            await client.query("COMMIT");
+            return {
+                s3Key: row.s3_key,
+                company: await this.getCompanyDetail(companyId, userId),
+            };
+        } catch (error) {
+            await client.query("ROLLBACK");
+            throw error;
+        } finally {
+            client.release();
+        }
     }
 
     private async assertCanManageCompany(

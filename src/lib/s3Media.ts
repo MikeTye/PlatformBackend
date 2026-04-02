@@ -1,4 +1,10 @@
-import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
+import {
+    S3Client,
+    PutObjectCommand,
+    GetObjectCommand,
+    DeleteObjectCommand,
+    CopyObjectCommand,
+} from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { createHash, randomUUID } from "crypto";
 
@@ -155,5 +161,63 @@ export async function uploadCompanyLogo(params: {
         key,
         assetUrl: publicAssetUrlForKey(key),
         sha256,
+    };
+}
+
+export async function uploadOnboardingCompanyLogo(params: {
+    userId: string;
+    originalName: string;
+    contentType: string;
+    body: Buffer;
+}): Promise<{ key: string; assetUrl: string; sha256: string }> {
+    const safeName = params.originalName.replace(/[^a-zA-Z0-9._-]/g, "_");
+    const ext = safeName.includes(".") ? safeName.split(".").pop() ?? "bin" : "bin";
+
+    const key = `users/${params.userId}/onboarding/company-logo/${randomUUID()}.${ext}`;
+
+    const sha256 = createHash("sha256").update(params.body).digest("hex");
+
+    await s3.send(
+        new PutObjectCommand({
+            Bucket: BUCKET,
+            Key: key,
+            Body: params.body,
+            ContentType: params.contentType || "application/octet-stream",
+        })
+    );
+
+    return {
+        key,
+        assetUrl: publicAssetUrlForKey(key),
+        sha256,
+    };
+}
+
+export async function promoteOnboardingCompanyLogo(params: {
+    tempKey: string;
+    companyId: string;
+    contentType?: string | null;
+}): Promise<{ key: string; assetUrl: string }> {
+    const ext = params.tempKey.includes(".")
+        ? params.tempKey.split(".").pop() ?? "bin"
+        : "bin";
+
+    const finalKey = `companies/${params.companyId}/logo/${randomUUID()}.${ext}`;
+
+    await s3.send(
+        new CopyObjectCommand({
+            Bucket: BUCKET,
+            CopySource: `${BUCKET}/${params.tempKey}`,
+            Key: finalKey,
+            ContentType: params.contentType ?? undefined,
+            MetadataDirective: "COPY",
+        })
+    );
+
+    await deleteObjectByKey(params.tempKey);
+
+    return {
+        key: finalKey,
+        assetUrl: publicAssetUrlForKey(finalKey),
     };
 }
