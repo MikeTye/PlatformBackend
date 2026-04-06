@@ -13,6 +13,7 @@ export const ProjectStageSchema = z.enum([
     'Closed',
 ]);
 
+export const ProjectVisibilitySchema = z.enum(['public', 'private']);
 
 export const ProjectSectionKeySchema = z.enum([
     'overview',
@@ -83,43 +84,6 @@ const csvStringArraySchema = z
         return [];
     });
 
-const ProjectTeamMemberCreateSchema = z.object({
-    memberType: z.enum(["user", "company"]),
-    memberId: z.string().uuid(),
-
-    userId: z.string().uuid().nullable().optional(),
-    companyId: z.string().uuid().nullable().optional(),
-
-    role: z.string().trim().nullable().optional(),
-    permission: ProjectPermissionSchema,
-}).refine((val) => {
-    if (val.memberType === "user") {
-        return !!(val.userId || val.memberId);
-    }
-    if (val.memberType === "company") {
-        return !!(val.companyId || val.memberId);
-    }
-    return false;
-}, {
-    message: "Invalid team member configuration",
-}).superRefine((val, ctx) => {
-    if (val.memberType === "user" && val.permission == null) {
-        ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            path: ["permission"],
-            message: "User collaborators require a permission",
-        });
-    }
-
-    if (val.memberType === "company" && val.permission !== null && val.permission !== undefined) {
-        ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            path: ["permission"],
-            message: "Company collaborators must not carry a permission",
-        });
-    }
-});
-
 export const ProjectOpportunitySchema = z.object({
     id: z.string().uuid().or(z.string().min(1)).optional(),
     type: z.string().trim().min(1),
@@ -127,13 +91,96 @@ export const ProjectOpportunitySchema = z.object({
     urgent: z.boolean().optional(),
 });
 
+const ProjectTeamMemberInputSchema = z
+    .object({
+        memberType: z.enum(["user", "company"]),
+
+        memberId: z.string().uuid().nullable().optional(),
+        userId: z.string().uuid().nullable().optional(),
+        companyId: z.string().uuid().nullable().optional(),
+
+        role: z.string().trim().nullable().optional(),
+        permission: ProjectPermissionSchema,
+
+        isPlatformMember: z.boolean().optional().default(true),
+        manualName: z.string().trim().nullable().optional(),
+        manualOrganization: z.string().trim().nullable().optional(),
+
+        // tolerate FE payload shape
+        name: z.string().trim().nullable().optional(),
+        companyName: z.string().trim().nullable().optional(),
+        avatarUrl: z.string().trim().nullable().optional(),
+    })
+    .superRefine((val, ctx) => {
+        const isPlatformMember = val.isPlatformMember !== false;
+
+        if (isPlatformMember) {
+            if (val.memberType === "user" && !(val.userId || val.memberId)) {
+                ctx.addIssue({
+                    code: z.ZodIssueCode.custom,
+                    path: ["userId"],
+                    message: "Platform user collaborators require a user id",
+                });
+            }
+
+            if (val.memberType === "company" && !(val.companyId || val.memberId)) {
+                ctx.addIssue({
+                    code: z.ZodIssueCode.custom,
+                    path: ["companyId"],
+                    message: "Platform company collaborators require a company id",
+                });
+            }
+        } else {
+            if (val.memberType === "user") {
+                const manualName = (val.manualName ?? val.name ?? "").trim();
+                if (!manualName) {
+                    ctx.addIssue({
+                        code: z.ZodIssueCode.custom,
+                        path: ["manualName"],
+                        message: "External individual collaborators require a name",
+                    });
+                }
+            }
+
+            if (val.memberType === "company") {
+                const manualOrg = (val.manualOrganization ?? val.companyName ?? val.name ?? "").trim();
+                if (!manualOrg) {
+                    ctx.addIssue({
+                        code: z.ZodIssueCode.custom,
+                        path: ["manualOrganization"],
+                        message: "External companies require an organization name",
+                    });
+                }
+            }
+        }
+
+        if (val.memberType === "user" && val.permission == null) {
+            ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                path: ["permission"],
+                message: "User collaborators require a permission",
+            });
+        }
+
+        if (val.memberType === "company" && val.permission !== null && val.permission !== undefined) {
+            ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                path: ["permission"],
+                message: "Company collaborators must not carry a permission",
+            });
+        }
+    });
+
+const ProjectTeamMemberCreateSchema = ProjectTeamMemberInputSchema;
+const ProjectTeamMemberUpdateSchema = ProjectTeamMemberInputSchema;
+
 export const CreateProjectSchema = z.object({
     companyId: z.string().uuid().nullable().optional().default(null),
     name: nonEmptyTrimmedString,
     tagline: z.string().trim().optional().default(""),
     type: nonEmptyTrimmedString,
     stage: ProjectStageSchema,
-    visibility: nonEmptyTrimmedString, // keep for now if the column exists, even if project-level visibility is ignored
+    projectVisibility: ProjectVisibilitySchema.optional().default('private'),
     country: nonEmptyTrimmedString,
     state: nullableTrimmedString,
     coordinates: CoordinatesSchema,
@@ -219,6 +266,9 @@ export type GetProjectResponse = {
         companyName?: string;
         avatarUrl?: string | null;
         permission?: 'creator' | 'viewer';
+        isPlatformMember?: boolean;
+        manualName?: string | null;
+        manualOrganization?: string | null;
     }>;
     sectionVisibility: Partial<Record<
         | "overview"
@@ -237,7 +287,24 @@ export type GetProjectResponse = {
 
     myRole: 'creator' | 'viewer' | null;
     saved: boolean;
+    projectVisibility: 'public' | 'private' | null;
 };
+
+export const UpdateProjectVisibilityParamsSchema = z.object({
+    id: z.string().uuid(),
+});
+
+export const UpdateProjectVisibilityBodySchema = z.object({
+    projectVisibility: ProjectVisibilitySchema,
+}).strict();
+
+export const DeleteProjectParamsSchema = z.object({
+    id: z.string().uuid(),
+});
+
+export type UpdateProjectVisibilityParams = z.infer<typeof UpdateProjectVisibilityParamsSchema>;
+export type UpdateProjectVisibilityBody = z.infer<typeof UpdateProjectVisibilityBodySchema>;
+export type DeleteProjectParams = z.infer<typeof DeleteProjectParamsSchema>;
 
 export const ProjectReadinessItemSchema = z.object({
     id: z.string().uuid().or(z.string().min(1)),
@@ -250,16 +317,7 @@ export const CreateProjectUpdateParamsSchema = z.object({
     id: z.string().uuid(),
 });
 
-export const CreateProjectUpdateBodySchema = z.object({
-    title: z.string().trim().min(1),
-    description: z.string().trim().nullable().optional(),
-    dateLabel: z.string().trim().nullable().optional(),
-    authorName: z.string().trim().nullable().optional(),
-    type: z.enum(["progress", "stage"]).optional().default("progress"),
-}).strict();
-
 export type CreateProjectUpdateParams = z.infer<typeof CreateProjectUpdateParamsSchema>;
-export type CreateProjectUpdateBody = z.infer<typeof CreateProjectUpdateBodySchema>;
 
 export const ProjectTeamMemberSchema = z.object({
     id: z.string().uuid().or(z.string().min(1)),
@@ -286,58 +344,6 @@ const ProjectUpdateSchema = z.object({
     type: z.enum(['progress', 'stage']).nullable().optional(),
 });
 
-const ProjectDocumentSchema = z.object({
-    id: z.string().uuid().or(z.string().min(1)).optional(),
-    name: z.string().trim().min(1),
-    type: z.string().trim().nullable().optional(),
-    status: z.string().trim().nullable().optional(),
-    dateLabel: z.string().trim().nullable().optional(),
-});
-
-const ProjectMediaSchema = z.object({
-    id: z.string().uuid().or(z.string().min(1)).optional(),
-    url: z.string().trim().min(1),
-    caption: z.string().trim().nullable().optional(),
-    dateLabel: z.string().trim().nullable().optional(),
-});
-
-const ProjectTeamMemberUpdateSchema = z.object({
-    memberType: z.enum(["user", "company"]),
-    memberId: z.string().uuid(),
-
-    userId: z.string().uuid().nullable().optional(),
-    companyId: z.string().uuid().nullable().optional(),
-
-    role: z.string().trim().nullable().optional(),
-    permission: ProjectPermissionSchema,
-}).refine((val) => {
-    if (val.memberType === "user") {
-        return !!(val.userId || val.memberId);
-    }
-    if (val.memberType === "company") {
-        return !!(val.companyId || val.memberId);
-    }
-    return false;
-}, {
-    message: "Invalid team member configuration",
-}).superRefine((val, ctx) => {
-    if (val.memberType === "user" && val.permission == null) {
-        ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            path: ["permission"],
-            message: "User collaborators require a permission",
-        });
-    }
-
-    if (val.memberType === "company" && val.permission !== null && val.permission !== undefined) {
-        ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            path: ["permission"],
-            message: "Company collaborators must not carry a permission",
-        });
-    }
-});
-
 export const UpdateProjectBodySchema = z.object({
     name: z.string().trim().min(1).optional(),
     stage: ProjectStageSchema.optional(),
@@ -346,6 +352,8 @@ export const UpdateProjectBodySchema = z.object({
 
     country: z.string().trim().nullable().optional(),
     region: z.string().trim().nullable().optional(),
+    latitude: z.number().finite().nullable().optional(),
+    longitude: z.number().finite().nullable().optional(),
 
     storyProblem: z.string().trim().nullable().optional(),
     storyApproach: z.string().trim().nullable().optional(),
@@ -355,20 +363,14 @@ export const UpdateProjectBodySchema = z.object({
     registryStatus: z.string().trim().nullable().optional(),
     registryProjectId: z.string().trim().nullable().optional(),
 
-    totalAreaHa: z.number().nullable().optional(),
+    totalAreaHa: z.number().finite().nullable().optional(),
     estimatedAnnualRemoval: z.string().trim().nullable().optional(),
 
-    readiness: z.array(ProjectReadinessItemSchema).optional(),
     opportunities: z.array(ProjectOpportunitySchema).optional(),
-
     team: z.array(ProjectTeamMemberUpdateSchema).optional(),
-
     sectionVisibility: ProjectSectionVisibilityMapSchema.optional(),
-
     updates: z.array(ProjectUpdateSchema).optional(),
-    documents: z.array(ProjectDocumentSchema).optional(),
-    media: z.array(ProjectMediaSchema).optional(),
-    coverImageUrl: z.string().trim().nullable().optional(),
+    projectVisibility: ProjectVisibilitySchema.optional(),
 }).strict();
 
 export type GetProjectParams = z.infer<typeof GetProjectParamsSchema>;
@@ -380,11 +382,3 @@ export const ListProjectUpdatesQuerySchema = z.object({
 });
 
 export type ListProjectUpdatesQuery = z.infer<typeof ListProjectUpdatesQuerySchema>;
-
-export const ListProjectOpportunitiesQuerySchema = z.object({
-    limit: z.coerce.number().int().min(1).max(20).optional().default(5),
-});
-
-export type ListProjectOpportunitiesQuery = z.infer<
-    typeof ListProjectOpportunitiesQuerySchema
->;

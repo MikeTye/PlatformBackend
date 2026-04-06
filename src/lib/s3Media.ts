@@ -193,6 +193,47 @@ export async function uploadOnboardingCompanyLogo(params: {
     };
 }
 
+export async function getObjectBufferByKey(key: string): Promise<Buffer> {
+    const res = await s3.send(
+        new GetObjectCommand({
+            Bucket: BUCKET,
+            Key: key,
+        })
+    );
+
+    if (!res.Body) {
+        throw new Error(`S3 object body is empty for key: ${key}`);
+    }
+
+    const bytes = await res.Body.transformToByteArray();
+    return Buffer.from(bytes);
+}
+
+export async function putObjectBuffer(params: {
+    key: string;
+    body: Buffer;
+    contentType?: string;
+}): Promise<{ key: string; assetUrl: string; sha256: string }> {
+    const sha256 = createHash("sha256")
+        .update(params.body)
+        .digest("hex");
+
+    await s3.send(
+        new PutObjectCommand({
+            Bucket: BUCKET,
+            Key: params.key,
+            Body: params.body,
+            ContentType: params.contentType || "application/octet-stream",
+        })
+    );
+
+    return {
+        key: params.key,
+        assetUrl: publicAssetUrlForKey(params.key),
+        sha256,
+    };
+}
+
 export async function promoteOnboardingCompanyLogo(params: {
     tempKey: string;
     companyId: string;

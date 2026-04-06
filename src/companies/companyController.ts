@@ -693,4 +693,35 @@ export class CompanyController {
             return next(err);
         }
     };
+
+    deleteCompany = async (
+        req: RequestWithUser & Request,
+        res: Response,
+        next: NextFunction
+    ) => {
+        try {
+            const userId = req.user?.userId;
+            if (!userId) {
+                return res.status(401).json({ ok: false, error: "Unauthorized" });
+            }
+
+            const { companyId } = UpdateCompanyParamsSchema.parse(req.params);
+
+            const deleted = await this.companyService.deleteCompany(companyId, userId);
+
+            if (!deleted) {
+                return res.status(404).json({
+                    ok: false,
+                    error: "Company not found",
+                });
+            }
+
+            return res.status(200).json({
+                ok: true,
+                message: "Company deleted",
+            });
+        } catch (err) {
+            return next(err);
+        }
+    };
 }

@@ -445,7 +445,7 @@ base_companies AS (
         c.country_code,
         c.function_description,
         c.website_url,
-        COALESCE(cm.asset_url, '') AS logo_url,
+        cm.asset_url AS logo_url,
         COALESCE(pc.projects_count, 0) AS projects_count,
         c.created_at,
         c.owner_user_id,
@@ -461,7 +461,7 @@ base_companies AS (
         SELECT cm.asset_url
         FROM company_media cm
         WHERE cm.company_id = c.id
-          AND cm.kind = 'logo'
+        AND COALESCE(cm.is_cover, false) = true
         ORDER BY cm.created_at DESC
         LIMIT 1
     ) cm ON true
@@ -605,6 +605,7 @@ SELECT json_build_object(
                 'countryCode', pc.country_code,
                 'functionDescription', pc.function_description,
                 'websiteUrl', pc.website_url,
+                'logoUrl', pc.logo_url,
                 'projectsCount', pc.projects_count,
                 'createdAt', pc.created_at,
                 'isMine', pc.is_mine,
@@ -2315,6 +2316,73 @@ SELECT json_build_object(
                 createdAt: row.created_at,
                 updatedAt: row.updated_at,
             };
+        } catch (error) {
+            await client.query("ROLLBACK");
+            throw error;
+        } finally {
+            client.release();
+        }
+    }
+
+    async deleteCompany(companyId: string, userId: string): Promise<boolean> {
+        const client = await this.db.connect();
+
+        try {
+            await client.query("BEGIN");
+
+            await this.assertCanEditCompany(companyId, userId, client);
+
+            const deleted = await client.query<{ id: string }>(
+                `
+            UPDATE companies
+            SET
+                delete_flag = true,
+                updated_at = NOW()
+            WHERE id = $1
+              AND COALESCE(delete_flag, false) = false
+            RETURNING id
+            `,
+                [companyId]
+            );
+
+            if (!deleted.rows[0]) {
+                await client.query("ROLLBACK");
+                return false;
+            }
+
+            await client.query(
+                `
+            UPDATE company_users
+            SET
+                delete_flag = true,
+                updated_at = NOW()
+            WHERE company_id = $1
+            `,
+                [companyId]
+            );
+
+            await client.query(
+                `
+            UPDATE company_invite_links
+            SET
+                is_active = false,
+                updated_at = NOW()
+            WHERE company_id = $1
+            `,
+                [companyId]
+            );
+
+            await client.query(
+                `
+            DELETE FROM user_saved_items
+            WHERE entity_type = 'company'
+              AND entity_id = $1
+            `,
+                [companyId]
+            );
+
+            await client.query("COMMIT");
+            return true;
         } catch (error) {
             await client.query("ROLLBACK");
             throw error;

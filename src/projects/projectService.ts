@@ -1,26 +1,6 @@
 import type { Pool } from "pg";
-import type { CreateProjectInput, CreateProjectUpdateBody, UpdateProjectBody } from "./schema.js";
+import type { CreateProjectInput, UpdateProjectBody } from "./schema.js";
 import { toPublicAssetUrl } from "../lib/s3Media.js";
-
-export type ProjectRow = {
-    id: string;
-    company_id: string | null;
-    owner_user_id: string;
-    name: string;
-    tagline: string | null;
-    project_type: string;
-    stage: string;
-    visibility: string;
-    host_country: string | null;
-    host_region: string | null;
-    latitude: string | null;
-    longitude: string | null;
-    story: string | null;
-    approach: string | null;
-    description: string | null;
-    created_at: string;
-    updated_at: string;
-};
 
 export type ProjectListScope = "all" | "my" | "saved";
 export type ProjectListSortBy =
@@ -62,6 +42,10 @@ export type ProjectListItem = {
     opportunities: string[];
     isSaved: boolean;
     isMine: boolean;
+    visibility: "public" | "private" | null;
+
+    coverImageUrl: string | null;
+    coverThumbUrl: string | null;
 };
 
 export type ProjectFacetOption = {
@@ -107,6 +91,7 @@ export type ProjectDetailMediaItem = {
 export type ProjectDetailDocumentItem = {
     id: string;
     kind: string;
+    status: string | null;
     assetUrl: string;
     contentType: string | null;
     name: string | null;
@@ -134,11 +119,18 @@ const ALL_SECTION_KEYS = [
 
 type ProjectTeamMemberInput = {
     memberType: "user" | "company";
-    memberId: string;
-    userId?: string | undefined | null;
-    companyId?: string | undefined | null;
-    role?: string | undefined | null;
-    permission?: "creator" | "viewer" | undefined | null;
+    memberId?: string | null;
+    userId?: string | null;
+    companyId?: string | null;
+    role?: string | null;
+    permission?: "creator" | "viewer" | null;
+    isPlatformMember?: boolean;
+    manualName?: string | null;
+    manualOrganization?: string | null;
+
+    // tolerate FE payload shape
+    name?: string | null;
+    companyName?: string | null;
 };
 
 type ProjectTeamMemberRow = {
@@ -146,8 +138,11 @@ type ProjectTeamMemberRow = {
     member_type: "user" | "company";
     member_user_id: string | null;
     member_company_id: string | null;
+    is_platform_member: boolean;
+    manual_name: string | null;
+    manual_organization: string | null;
     role: string | null;
-    permission: "creator" | "viewer";
+    permission: "creator" | "viewer" | null;
     display_name: string;
     email: string | null;
     company_name: string | null;
@@ -162,6 +157,32 @@ type ProjectOpportunityInput = {
     type: string;
     description?: string | null | undefined;
     urgent?: boolean | undefined;
+};
+
+type ProjectOpportunityRecord = {
+    id: string;
+    project_id: string;
+    opportunity_type: string;
+    description: string | null;
+    is_priority: boolean;
+    sort_order: number;
+    is_active: boolean;
+    created_at: string;
+};
+
+export type CreateProjectOpportunityInput = {
+    type: string | undefined;
+    description?: string | null | undefined;
+    urgent?: boolean | undefined;
+    isActive?: boolean | undefined;
+};
+
+export type UpdateProjectOpportunityInput = {
+    projectId?: string | undefined;
+    type?: string | undefined;
+    description?: string | null | undefined;
+    urgent?: boolean | undefined;
+    isActive?: boolean | undefined;
 };
 
 type ProjectUpdateInput = {
@@ -197,6 +218,12 @@ export type RecentProjectOpportunityListItem = {
     description: string | null;
     urgent: boolean;
     createdAt: string;
+
+    // additive only
+    projectUpid: string | null;
+    stage: string | null;
+    country: string | null;
+    developer: string | null;
 };
 
 export type ListProjectOpportunitiesResult = {
@@ -272,7 +299,7 @@ export class ProjectService {
               p.name,
               p.project_type,
               p.stage,
-              p.description,
+              p.tagline,
               p.host_country,
               p.host_region,
               p.latitude,
@@ -325,7 +352,7 @@ export class ProjectService {
             name: row.name,
             stage: row.stage,
             type: row.project_type ?? null,
-            description: row.description ?? null,
+            description: row.tagline ?? null,
             companyName: row.company_name ?? null,
             country: row.host_country ?? null,
             region: row.host_region ?? null,
@@ -441,7 +468,7 @@ export class ProjectService {
                     input.tagline.trim(),
                     input.type.trim(),
                     input.stage,
-                    input.visibility.trim(),
+                    input.projectVisibility ?? 'private',
                     input.country.trim(),
                     input.state,
                     input.coordinates?.lat ?? null,
@@ -500,35 +527,63 @@ export class ProjectService {
 
             for (const member of (input.team ?? []) as ProjectTeamMemberInput[]) {
                 const memberType = member.memberType === "company" ? "company" : "user";
-                const memberUserId =
-                    memberType === "user" ? (member.userId ?? member.memberId) : null;
-                const memberCompanyId =
-                    memberType === "company" ? (member.companyId ?? member.memberId) : null;
+                const isPlatformMember = member.isPlatformMember !== false;
 
-                if (memberType === "user" && memberUserId === userId) continue;
-                if (!memberUserId && !memberCompanyId) continue;
+                const memberUserId =
+                    isPlatformMember && memberType === "user"
+                        ? (member.userId ?? member.memberId ?? null)
+                        : null;
+
+                const memberCompanyId =
+                    isPlatformMember && memberType === "company"
+                        ? (member.companyId ?? member.memberId ?? null)
+                        : null;
+
+                const manualName =
+                    !isPlatformMember && memberType === "user"
+                        ? (member.manualName ?? member.name ?? null)
+                        : !isPlatformMember && memberType === "company"
+                            ? (member.manualName ?? member.name ?? null)
+                            : null;
+
+                const manualOrganization =
+                    !isPlatformMember && memberType === "company"
+                        ? (member.manualOrganization ?? member.companyName ?? member.name ?? null)
+                        : !isPlatformMember && memberType === "user"
+                            ? (member.manualOrganization ?? member.companyName ?? null)
+                            : null;
+
+                if (isPlatformMember && memberType === "user" && memberUserId === userId) continue;
+                if (isPlatformMember && !memberUserId && !memberCompanyId) continue;
+                if (!isPlatformMember && !(manualName || manualOrganization)) continue;
 
                 await client.query(
                     `
-                        INSERT INTO project_users (
-                        project_id,
-                        member_type,
-                        member_user_id,
-                        member_company_id,
-                        permission,
-                        role,
-                        delete_flag,
-                        created_at,
-                        updated_at
-                        )
-                        VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), false, now(), now())
-                        `,
+        INSERT INTO project_users (
+            project_id,
+            member_type,
+                    member_user_id,
+                    member_company_id,
+                    is_platform_member,
+                    manual_name,
+                    manual_organization,
+                    permission,
+                    role,
+                    delete_flag,
+                    created_at,
+                    updated_at
+                )
+                VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), NULLIF($7, ''), $8, NULLIF($9, ''), false, now(), now())
+                `,
                     [
                         projectId,
                         memberType,
                         memberUserId,
                         memberCompanyId,
-                        member.permission ?? "viewer",
+                        isPlatformMember,
+                        manualName,
+                        manualOrganization,
+                        memberType === "company" ? null : (member.permission ?? "viewer"),
                         member.role ?? null,
                     ]
                 );
@@ -542,6 +597,49 @@ export class ProjectService {
         } finally {
             client.release();
         }
+    }
+
+    private normalizeProjectOpportunityInput(
+        input: CreateProjectOpportunityInput | UpdateProjectOpportunityInput
+    ) {
+        return {
+            type:
+                typeof input.type === "string"
+                    ? input.type.trim()
+                    : undefined,
+            description:
+                input.description === undefined
+                    ? undefined
+                    : (input.description?.trim() || null),
+            urgent:
+                input.urgent === undefined
+                    ? undefined
+                    : Boolean(input.urgent),
+            isActive:
+                input.isActive === undefined
+                    ? undefined
+                    : Boolean(input.isActive),
+        };
+    }
+
+    private mapProjectOpportunity(row: {
+        id: string;
+        project_id: string;
+        opportunity_type: string;
+        description: string | null;
+        is_priority: boolean;
+        sort_order: number;
+        is_active: boolean;
+    }) {
+        return {
+            id: row.id,
+            projectId: row.project_id,
+            type: row.opportunity_type,
+            description: row.description ?? null,
+            urgent: Boolean(row.is_priority),
+            sortOrder: Number(row.sort_order ?? 0),
+            isActive: Boolean(row.is_active),
+        };
     }
 
     private buildProjectListOrderBy(
@@ -602,14 +700,22 @@ export class ProjectService {
         const orderBySql = this.buildProjectListOrderBy(sortBy, sortDir);
 
         const sql = `
-WITH saved_projects AS (
-    SELECT usi.entity_id AS project_id
-    FROM user_saved_items usi
-    WHERE usi.user_id = ${userIdParam}
-      AND usi.entity_type = 'project'
-),
-base_projects AS (
-    SELECT
+        WITH saved_projects AS (
+            SELECT usi.entity_id AS project_id
+            FROM user_saved_items usi
+            WHERE usi.user_id = ${userIdParam}
+            AND usi.entity_type = 'project'
+        ),
+        project_memberships AS (
+            SELECT DISTINCT pu.project_id
+            FROM project_users pu
+            WHERE pu.member_type = 'user'
+            AND pu.member_user_id = ${userIdParam}
+            AND COALESCE(pu.delete_flag, false) = false
+            AND pu.permission IN ('creator', 'viewer')
+        ),
+    base_projects AS (
+        SELECT
         p.id,
         p.upid,
         p.name,
@@ -624,21 +730,55 @@ base_projects AS (
         p.updated_at,
         p.owner_user_id,
         p.company_id,
+        p.visibility,
         c.display_name AS developer_name,
         (sp.project_id IS NOT NULL) AS is_saved,
-        (p.owner_user_id = ${userIdParam}) AS is_mine
-    FROM projects p
-    LEFT JOIN companies c
-        ON c.id = p.company_id
-       AND COALESCE(c.delete_flag, false) = false
-    LEFT JOIN saved_projects sp
-        ON sp.project_id = p.id
-    WHERE COALESCE(p.delete_flag, false) = false
-      AND (
-        NULLIF(${qParam}::text, '') IS NULL
-        OR COALESCE(NULLIF(TRIM(p.name), ''), '') ILIKE '%' || ${qParam}::text || '%'
-      )
-),
+        (p.owner_user_id = ${userIdParam}) AS is_mine,
+
+        cover_pm.asset_url AS cover_image_url,
+        thumb_pm.asset_url AS cover_thumb_url
+
+        FROM projects p
+        LEFT JOIN companies c
+            ON c.id = p.company_id
+        AND COALESCE(c.delete_flag, false) = false
+        LEFT JOIN saved_projects sp
+            ON sp.project_id = p.id
+        LEFT JOIN project_memberships pm
+            ON pm.project_id = p.id
+
+        LEFT JOIN LATERAL (
+            SELECT pm1.id, pm1.asset_url
+            FROM project_media pm1
+            WHERE pm1.project_id = p.id
+            AND COALESCE(pm1.is_system_generated, false) = false
+            ORDER BY
+            COALESCE(pm1.is_cover, false) DESC,
+            pm1.created_at ASC
+            LIMIT 1
+        ) cover_pm ON TRUE
+
+        LEFT JOIN LATERAL (
+            SELECT pm2.asset_url
+            FROM project_media pm2
+            WHERE pm2.source_media_id = cover_pm.id
+            AND pm2.variant = 'logo'
+            AND COALESCE(pm2.is_system_generated, false) = true
+            ORDER BY pm2.created_at DESC
+            LIMIT 1
+        ) thumb_pm ON TRUE
+
+        WHERE COALESCE(p.delete_flag, false) = false
+        AND (
+            LOWER(COALESCE(p.visibility, 'private')) = 'public'
+            OR pm.project_id IS NOT NULL
+            OR p.owner_user_id = ${userIdParam}
+        )
+        AND (
+            NULLIF(${qParam}::text, '') IS NULL
+            OR COALESCE(NULLIF(TRIM(p.name), ''), '') ILIKE '%' || ${qParam}::text || '%'
+        )
+    ),
 base_with_opps AS (
     SELECT
         bp.*,
@@ -668,7 +808,10 @@ base_with_opps AS (
         bp.company_id,
         bp.developer_name,
         bp.is_saved,
-        bp.is_mine
+        bp.is_mine,
+        bp.visibility,
+        bp.cover_image_url,
+        bp.cover_thumb_url
 ),
 scoped_projects AS (
     SELECT *
@@ -843,7 +986,10 @@ SELECT json_build_object(
                 'updatedAt', pp.updated_at,
                 'opportunities', pp.opportunities,
                 'isSaved', pp.is_saved,
-                'isMine', pp.is_mine
+                'isMine', pp.is_mine,
+                'visibility', pp.visibility,
+                'coverImageUrl', pp.cover_image_url,
+                'coverThumbUrl', pp.cover_thumb_url
             )
             ORDER BY ${orderBySql}
         )
@@ -916,7 +1062,20 @@ SELECT json_build_object(
             };
         }
 
-        return row;
+        return {
+            ...row,
+            items: (row.items ?? []).map((item) => ({
+                ...item,
+                coverImageUrl: toPublicAssetUrl({
+                    asset_url: item.coverImageUrl,
+                    s3_key: null,
+                }),
+                coverThumbUrl: toPublicAssetUrl({
+                    asset_url: item.coverThumbUrl,
+                    s3_key: null,
+                }),
+            })),
+        };
     }
 
     private async replaceProjectUpdates(
@@ -1065,18 +1224,59 @@ SELECT json_build_object(
                 );
             }
 
-            if (patch.team) {
-                await this.replaceProjectTeam(
-                    projectId,
-                    currentUserId,
-                    patch.team.map((member) => ({
-                        ...member,
-                        permission:
-                            member.memberType === "company"
-                                ? null
-                                : (member.permission ?? "viewer"),
-                    }))
-                );
+            if (patch.team !== undefined) {
+                const normalizedTeam: ProjectTeamMemberInput[] = patch.team.map((member) => {
+                    const memberType = member.memberType === "company" ? "company" : "user";
+                    const isPlatformMember = member.isPlatformMember !== false;
+
+                    if (memberType === "company") {
+                        return {
+                            memberType: "company",
+                            memberId: member.memberId ?? member.companyId ?? null,
+                            companyId: isPlatformMember
+                                ? (member.companyId ?? member.memberId ?? null)
+                                : null,
+                            userId: null,
+                            role: member.role ?? null,
+                            permission: null,
+                            isPlatformMember,
+                            manualName:
+                                !isPlatformMember
+                                    ? (member.manualName ?? member.name ?? null)
+                                    : null,
+                            manualOrganization:
+                                !isPlatformMember
+                                    ? (member.manualOrganization ?? member.companyName ?? member.name ?? null)
+                                    : null,
+                            name: member.name ?? null,
+                            companyName: member.companyName ?? null,
+                        };
+                    }
+
+                    return {
+                        memberType: "user",
+                        memberId: member.memberId ?? member.userId ?? null,
+                        userId: isPlatformMember
+                            ? (member.userId ?? member.memberId ?? null)
+                            : null,
+                        companyId: null,
+                        role: member.role ?? null,
+                        permission: member.permission ?? "viewer",
+                        isPlatformMember,
+                        manualName:
+                            !isPlatformMember
+                                ? (member.manualName ?? member.name ?? null)
+                                : null,
+                        manualOrganization:
+                            !isPlatformMember
+                                ? (member.manualOrganization ?? member.companyName ?? null)
+                                : null,
+                        name: member.name ?? null,
+                        companyName: member.companyName ?? null,
+                    };
+                });
+
+                await this.replaceProjectTeam(projectId, currentUserId, normalizedTeam);
             }
 
             if (patch.updates) {
@@ -1156,10 +1356,24 @@ SELECT json_build_object(
           pu.member_type,
           pu.member_user_id,
           pu.member_company_id,
+          pu.is_platform_member,
+          pu.manual_name,
+          pu.manual_organization,
           pu.role,
           pu.permission,
 
           CASE
+            WHEN COALESCE(pu.is_platform_member, true) = false AND pu.member_type = 'company' THEN
+              COALESCE(
+                NULLIF(TRIM(pu.manual_name), ''),
+                NULLIF(TRIM(pu.manual_organization), ''),
+                pu.id::text
+              )
+            WHEN COALESCE(pu.is_platform_member, true) = false AND pu.member_type = 'user' THEN
+              COALESCE(
+                NULLIF(TRIM(pu.manual_name), ''),
+                pu.id::text
+              )
             WHEN pu.member_type = 'company' THEN
               COALESCE(NULLIF(TRIM(c.display_name), ''), pu.member_company_id::text)
             ELSE
@@ -1172,28 +1386,39 @@ SELECT json_build_object(
           END AS display_name,
 
           CASE
-            WHEN pu.member_type = 'user' THEN un.email
+            WHEN COALESCE(pu.is_platform_member, true) = true
+             AND pu.member_type = 'user' THEN un.email
             ELSE NULL
           END AS email,
 
           CASE
+            WHEN COALESCE(pu.is_platform_member, true) = false
+             AND pu.member_type = 'company' THEN
+              COALESCE(NULLIF(TRIM(pu.manual_organization), ''), NULLIF(TRIM(pu.manual_name), ''))
+            WHEN COALESCE(pu.is_platform_member, true) = false
+             AND pu.member_type = 'user' THEN
+              NULLIF(TRIM(pu.manual_organization), '')
             WHEN pu.member_type = 'user' THEN owner_c.display_name
             ELSE c.display_name
           END AS company_name
 
         FROM project_users pu
         LEFT JOIN users_new un
-          ON pu.member_type = 'user'
+          ON COALESCE(pu.is_platform_member, true) = true
+         AND pu.member_type = 'user'
          AND un.id = pu.member_user_id
         LEFT JOIN user_profiles up
-          ON pu.member_type = 'user'
+          ON COALESCE(pu.is_platform_member, true) = true
+         AND pu.member_type = 'user'
          AND up.user_id = pu.member_user_id
         LEFT JOIN companies c
-          ON pu.member_type = 'company'
+          ON COALESCE(pu.is_platform_member, true) = true
+         AND pu.member_type = 'company'
          AND c.id = pu.member_company_id
          AND COALESCE(c.delete_flag, false) = false
         LEFT JOIN companies owner_c
-          ON pu.member_type = 'user'
+          ON COALESCE(pu.is_platform_member, true) = true
+         AND pu.member_type = 'user'
          AND owner_c.id = (
             SELECT c2.id
             FROM companies c2
@@ -1217,22 +1442,33 @@ SELECT json_build_object(
             const memberType = row.member_type === "company" ? "company" : "user";
             const userId = row.member_user_id ?? null;
             const companyId = row.member_company_id ?? null;
+            const isPlatformMember = row.is_platform_member !== false;
 
             return {
                 id: row.id,
                 memberType,
-                memberId: memberType === "company" ? companyId ?? row.id : userId ?? row.id,
+                memberId:
+                    memberType === "company"
+                        ? (companyId ?? row.id)
+                        : (userId ?? row.id),
                 userId,
                 companyId,
                 name: row.display_name,
                 role: row.role ?? "",
                 companyName: row.company_name ?? "",
                 avatarUrl: null,
-                permission: row.permission === "creator" ? "creator" : "viewer",
+                permission:
+                    memberType === "company"
+                        ? undefined
+                        : row.permission === "creator"
+                            ? "creator"
+                            : "viewer",
+                isPlatformMember,
+                manualName: row.manual_name ?? null,
+                manualOrganization: row.manual_organization ?? null,
             };
         });
     }
-
     private async loadSectionVisibility(projectId: string) {
         const res = await this.db.query(
             `
@@ -1262,10 +1498,14 @@ SELECT json_build_object(
             values.push(value);
         };
 
+        if (patch.description !== undefined) set('tagline', patch.description);
+        if (patch.latitude !== undefined) set('latitude', patch.latitude);
+        if (patch.longitude !== undefined) set('longitude', patch.longitude);
+        if (patch.registryProjectId !== undefined) set('registry_project_id', patch.registryProjectId); // if column exists
         if (patch.name !== undefined) set('name', patch.name);
         if (patch.stage !== undefined) set('stage', patch.stage);
         if (patch.type !== undefined) set('project_type', patch.type);
-        if (patch.description !== undefined) set('description', patch.description);
+        if (patch.projectVisibility !== undefined) set('visibility', patch.projectVisibility);
         if (patch.country !== undefined) set('host_country', patch.country);
         if (patch.region !== undefined) set('host_region', patch.region);
         if (patch.storyProblem !== undefined) set('story', patch.storyProblem);
@@ -1322,22 +1562,26 @@ SELECT json_build_object(
         currentUserId: string,
         opportunities: ProjectOpportunityInput[]
     ) {
-        await this.db.query(
+        const existingRes = await this.db.query<{
+            id: string;
+            project_id: string;
+        }>(
             `
-            UPDATE project_opportunities
-            SET delete_flag = true,
-                deleted_at = now(),
-                updated_at = now(),
-                updated_by = $2
+            SELECT id, project_id
+            FROM project_opportunities
             WHERE project_id = $1
               AND COALESCE(delete_flag, false) = false
             `,
-            [projectId, currentUserId]
+            [projectId]
         );
+
+        const existingById = new Map(existingRes.rows.map((row) => [row.id, row]));
+        const seenIds = new Set<string>();
 
         const cleaned = opportunities
             .map((item) => ({
-                type: item.type?.trim() ?? '',
+                id: item.id?.trim() || undefined,
+                type: item.type?.trim() ?? "",
                 description: item.description?.trim() ?? null,
                 urgent: Boolean(item.urgent),
             }))
@@ -1345,10 +1589,43 @@ SELECT json_build_object(
 
         for (let index = 0; index < cleaned.length; index += 1) {
             const item = cleaned[index];
+            if (!item) continue;
 
-            if (item) {
+            if (item.id && existingById.has(item.id)) {
+                seenIds.add(item.id);
+
                 await this.db.query(
                     `
+                    UPDATE project_opportunities
+                    SET
+                        opportunity_type = $2,
+                        description = $3,
+                        is_priority = $4,
+                        sort_order = $5,
+                        is_active = true,
+                        updated_by = $6,
+                        updated_at = now(),
+                        delete_flag = false,
+                        deleted_at = NULL
+                    WHERE id = $1
+                      AND project_id = $7
+                    `,
+                    [
+                        item.id,
+                        item.type,
+                        item.description,
+                        item.urgent,
+                        index,
+                        currentUserId,
+                        projectId,
+                    ]
+                );
+
+                continue;
+            }
+
+            const insertRes = await this.db.query<{ id: string }>(
+                `
                 INSERT INTO project_opportunities (
                     project_id,
                     opportunity_type,
@@ -1363,17 +1640,43 @@ SELECT json_build_object(
                     delete_flag
                 )
                 VALUES ($1, $2, $3, $4, $5, true, $6, $6, now(), now(), false)
+                RETURNING id
                 `,
-                    [
-                        projectId,
-                        item.type,
-                        item.description,
-                        item.urgent,
-                        index,
-                        currentUserId,
-                    ]
-                );
+                [
+                    projectId,
+                    item.type,
+                    item.description,
+                    item.urgent,
+                    index,
+                    currentUserId,
+                ]
+            );
+
+            const insertedId = insertRes.rows[0]?.id;
+            if (insertedId) {
+                seenIds.add(insertedId);
             }
+        }
+
+        const idsToDelete = existingRes.rows
+            .map((row) => row.id)
+            .filter((id) => !seenIds.has(id));
+
+        if (idsToDelete.length > 0) {
+            await this.db.query(
+                `
+                UPDATE project_opportunities
+                SET
+                    delete_flag = true,
+                    deleted_at = now(),
+                    updated_at = now(),
+                    updated_by = $2
+                WHERE project_id = $1
+                  AND id = ANY($3::uuid[])
+                  AND COALESCE(delete_flag, false) = false
+                `,
+                [projectId, currentUserId, idsToDelete]
+            );
         }
     }
 
@@ -1396,483 +1699,210 @@ SELECT json_build_object(
 
         for (const member of team) {
             const memberType = member.memberType === "company" ? "company" : "user";
+            const isPlatformMember = member.isPlatformMember !== false;
+
             const memberUserId =
-                memberType === "user" ? (member.userId ?? member.memberId) : null;
+                isPlatformMember && memberType === "user"
+                    ? (member.userId ?? member.memberId ?? null)
+                    : null;
+
             const memberCompanyId =
-                memberType === "company" ? (member.companyId ?? member.memberId) : null;
+                isPlatformMember && memberType === "company"
+                    ? (member.companyId ?? member.memberId ?? null)
+                    : null;
 
-            if (memberType === "user" && memberUserId === currentUserId) continue;
-            if (!memberUserId && !memberCompanyId) continue;
+            const manualName =
+                !isPlatformMember && memberType === "user"
+                    ? (member.manualName ?? member.name ?? null)
+                    : !isPlatformMember && memberType === "company"
+                        ? (member.manualName ?? member.name ?? null)
+                        : null;
 
-            const existing = await this.db.query<{ id: string }>(
-                `
-            SELECT id
-            FROM project_users
-            WHERE project_id = $1
-              AND member_type = $2
-              AND (
-                ($2 = 'user' AND member_user_id = $3)
-                OR
-                ($2 = 'company' AND member_company_id = $4)
-              )
-            LIMIT 1
-            `,
-                [projectId, memberType, memberUserId, memberCompanyId]
-            );
+            const manualOrganization =
+                !isPlatformMember && memberType === "company"
+                    ? (member.manualOrganization ?? member.companyName ?? member.name ?? null)
+                    : !isPlatformMember && memberType === "user"
+                        ? (member.manualOrganization ?? member.companyName ?? null)
+                        : null;
+
+            if (isPlatformMember && memberType === "user" && memberUserId === currentUserId) continue;
+            if (isPlatformMember && !memberUserId && !memberCompanyId) continue;
+            if (!isPlatformMember && !(manualName || manualOrganization)) continue;
 
             const permissionValue =
                 memberType === "company"
                     ? null
                     : (member.permission ?? "viewer");
 
-            if (existing.rows[0]?.id) {
-                await this.db.query(
+            if (isPlatformMember) {
+                const existing = await this.db.query<{ id: string }>(
                     `
-            UPDATE project_users
-            SET permission = $2,
-                role = NULLIF($3, ''),
-                delete_flag = false,
-                updated_at = now()
-            WHERE id = $1
-            `,
-                    [
-                        existing.rows[0].id,
-                        permissionValue,
-                        member.role ?? null,
-                    ]
+                SELECT id
+                FROM project_users
+                WHERE project_id = $1
+                  AND member_type = $2
+                  AND COALESCE(is_platform_member, true) = true
+                  AND (
+                    ($2 = 'user' AND member_user_id = $3)
+                    OR
+                    ($2 = 'company' AND member_company_id = $4)
+                  )
+                LIMIT 1
+                `,
+                    [projectId, memberType, memberUserId, memberCompanyId]
                 );
-            } else {
-                await this.db.query(
-                    `
+
+                if (existing.rows[0]?.id) {
+                    await this.db.query(
+                        `
+                    UPDATE project_users
+                    SET
+                        member_user_id = $2,
+                        member_company_id = $3,
+                        is_platform_member = true,
+                        manual_name = NULL,
+                        manual_organization = NULL,
+                        permission = $4,
+                        role = NULLIF($5, ''),
+                        delete_flag = false,
+                        updated_at = now()
+                    WHERE id = $1
+                    `,
+                        [
+                            existing.rows[0].id,
+                            memberUserId,
+                            memberCompanyId,
+                            permissionValue,
+                            member.role ?? null,
+                        ]
+                    );
+                    continue;
+                }
+            }
+
+            await this.db.query(
+                `
             INSERT INTO project_users (
-            project_id,
-            member_type,
-            member_user_id,
-            member_company_id,
-            permission,
-            role,
-            delete_flag,
-            created_at,
-            updated_at
-            )
-            VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), false, now(), now())
-            `,
-                    [
-                        projectId,
-                        memberType,
-                        memberUserId,
-                        memberCompanyId,
-                        permissionValue,
-                        member.role ?? null,
-                    ]
-                );
-            }
-        }
-    }
-
-    private normalizeProjectUpdateInput(item: ProjectUpdateInput) {
-        const title = item.title?.trim() ?? "";
-        const description = item.description?.trim() ?? null;
-        const authorName = item.authorName?.trim() ?? null;
-        const type = item.type === "stage" ? "stage" : "progress";
-
-        const parsedDate =
-            item.dateLabel && /^\d{4}-\d{2}-\d{2}$/.test(item.dateLabel)
-                ? item.dateLabel
-                : null;
-
-        return {
-            title,
-            description,
-            authorName,
-            type,
-            parsedDate,
-        };
-    }
-
-    async createProjectMedia(
-        projectId: string,
-        userId: string,
-        input: {
-            kind?: string;
-            assetUrl: string;
-            contentType?: string | null;
-            s3Key?: string | null;
-            sha256?: string | null;
-            caption?: string | null;
-            isCover?: boolean;
-            metadata?: Record<string, unknown>;
-        }
-    ) {
-        const client = await this.db.connect();
-
-        try {
-            await client.query("BEGIN");
-            await this.assertCanEditProject(projectId, userId, client);
-
-            if (input.isCover) {
-                await client.query(
-                    `
-                UPDATE project_media
-                SET is_cover = false
-                WHERE project_id = $1
-                `,
-                    [projectId]
-                );
-            }
-
-            await client.query(
-                `
-            INSERT INTO project_media (
                 project_id,
-                kind,
-                asset_url,
-                content_type,
-                sha256,
-                metadata,
-                s3_key,
-                is_cover
+                member_type,
+                member_user_id,
+                member_company_id,
+                is_platform_member,
+                manual_name,
+                manual_organization,
+                permission,
+                role,
+                delete_flag,
+                created_at,
+                updated_at
             )
-            VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8)
+            VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), NULLIF($7, ''), $8, NULLIF($9, ''), false, now(), now())
             `,
                 [
                     projectId,
-                    input.kind?.trim() || "gallery",
-                    input.assetUrl,
-                    input.contentType ?? null,
-                    input.sha256 ?? null,
-                    JSON.stringify({
-                        ...(input.metadata ?? {}),
-                        caption: input.caption?.trim() || null,
-                    }),
-                    input.s3Key ?? null,
-                    Boolean(input.isCover),
+                    memberType,
+                    memberUserId,
+                    memberCompanyId,
+                    isPlatformMember,
+                    manualName,
+                    manualOrganization,
+                    permissionValue,
+                    member.role ?? null,
                 ]
             );
-
-            await client.query(
-                `UPDATE projects SET updated_at = NOW() WHERE id = $1`,
-                [projectId]
-            );
-
-            await client.query("COMMIT");
-            return this.getProjectById(projectId, userId);
-        } catch (error) {
-            await client.query("ROLLBACK");
-            throw error;
-        } finally {
-            client.release();
         }
     }
 
-    async updateProjectMedia(
-        projectId: string,
-        mediaId: string,
-        userId: string,
-        input: {
-            caption?: string | null;
-            isCover?: boolean;
-        }
-    ) {
-        const client = await this.db.connect();
+    private async loadProjectMedia(projectId: string): Promise<ProjectDetailMediaItem[]> {
+        const res = await this.db.query(
+            `
+        SELECT
+            pm.id,
+            COALESCE(pm.kind, 'image') AS kind,
+            pm.asset_url,
+            pm.s3_key,
+            pm.content_type,
+            pm.metadata->>'caption' AS caption,
+            COALESCE(pm.is_cover, false) AS is_cover,
+            pm.created_at
+        FROM project_media pm
+        WHERE pm.project_id = $1
+          AND COALESCE(pm.is_system_generated, false) = false
+        ORDER BY
+          COALESCE(pm.is_cover, false) DESC,
+          pm.created_at ASC
+        `,
+            [projectId]
+        );
 
-        try {
-            await client.query("BEGIN");
-            await this.assertCanEditProject(projectId, userId, client);
-
-            const existing = await client.query<{
-                id: string;
-                metadata: Record<string, unknown> | null;
-            }>(
-                `
-            SELECT id, metadata
-            FROM project_media
-            WHERE id = $1
-              AND project_id = $2
-            LIMIT 1
-            `,
-                [mediaId, projectId]
-            );
-
-            const row = existing.rows[0];
-            if (!row) {
-                throw new Error("Media not found");
-            }
-
-            if (input.isCover) {
-                await client.query(
-                    `
-                UPDATE project_media
-                SET is_cover = false
-                WHERE project_id = $1
-                `,
-                    [projectId]
-                );
-            }
-
-            const nextMetadata = {
-                ...(row.metadata ?? {}),
-                ...(input.caption !== undefined
-                    ? { caption: input.caption?.trim() || null }
-                    : {}),
-            };
-
-            await client.query(
-                `
-            UPDATE project_media
-            SET
-                metadata = $3::jsonb,
-                is_cover = COALESCE($4, is_cover)
-            WHERE id = $1
-              AND project_id = $2
-            `,
-                [
-                    mediaId,
-                    projectId,
-                    JSON.stringify(nextMetadata),
-                    input.isCover,
-                ]
-            );
-
-            await client.query(
-                `UPDATE projects SET updated_at = NOW() WHERE id = $1`,
-                [projectId]
-            );
-
-            await client.query("COMMIT");
-            return this.getProjectById(projectId, userId);
-        } catch (error) {
-            await client.query("ROLLBACK");
-            throw error;
-        } finally {
-            client.release();
-        }
+        return res.rows.map((row) => ({
+            id: row.id,
+            kind: row.kind ?? 'image',
+            assetUrl: toPublicAssetUrl({
+                asset_url: row.asset_url,
+                s3_key: row.s3_key ?? null,
+            }) ?? "",
+            contentType: row.content_type ?? null,
+            caption: row.caption ?? null,
+            isCover: Boolean(row.is_cover),
+            createdAt: row.created_at,
+        }));
     }
 
-    async deleteProjectMedia(
-        projectId: string,
-        mediaId: string,
-        userId: string
-    ): Promise<{ s3Key: string | null; project: any | null }> {
-        const client = await this.db.connect();
+    private async loadProjectDocuments(projectId: string): Promise<ProjectDetailDocumentItem[]> {
+        const res = await this.db.query<{
+            id: string;
+            kind: string;
+            status: string | null;
+            asset_url: string | null;
+            s3_key: string | null;
+            content_type: string | null;
+            metadata: Record<string, unknown> | null;
+            created_at: string;
+        }>(
+            `
+    SELECT
+        id,
+        kind,
+        status,
+        asset_url,
+        s3_key,
+        content_type,
+        metadata,
+        created_at
+    FROM project_documents
+    WHERE project_id = $1
+    ORDER BY created_at DESC
+    `,
+            [projectId]
+        );
 
-        try {
-            await client.query("BEGIN");
-            await this.assertCanEditProject(projectId, userId, client);
+        return res.rows.map((row) => {
+            const metadata =
+                row.metadata && typeof row.metadata === "object" ? row.metadata : {};
 
-            const existing = await client.query<{ s3_key: string | null }>(
-                `
-            DELETE FROM project_media
-            WHERE id = $1
-              AND project_id = $2
-            RETURNING s3_key
-            `,
-                [mediaId, projectId]
-            );
-
-            const row = existing.rows[0];
-            if (!row) {
-                throw new Error("Media not found");
-            }
-
-            await client.query(
-                `UPDATE projects SET updated_at = NOW() WHERE id = $1`,
-                [projectId]
-            );
-
-            await client.query("COMMIT");
             return {
-                s3Key: row.s3_key,
-                project: await this.getProjectById(projectId, userId),
+                id: row.id,
+                kind: row.kind,
+                status: row.status ?? null,
+                assetUrl: toPublicAssetUrl(row) ?? "",
+                contentType: row.content_type ?? null,
+                name:
+                    typeof metadata.name === "string" && metadata.name.trim()
+                        ? metadata.name.trim()
+                        : null,
+                type:
+                    typeof metadata.type === "string" && metadata.type.trim()
+                        ? metadata.type.trim()
+                        : null,
+                createdAt: row.created_at,
             };
-        } catch (error) {
-            await client.query("ROLLBACK");
-            throw error;
-        } finally {
-            client.release();
-        }
+        });
     }
-
-    async createProjectDocument(
-        projectId: string,
-        userId: string,
-        input: {
-            kind?: string;
-            assetUrl: string;
-            contentType?: string | null;
-            s3Key?: string | null;
-            sha256?: string | null;
-            name?: string | null;
-            type?: string | null;
-            metadata?: Record<string, unknown>;
-        }
-    ) {
-        const client = await this.db.connect();
-
-        try {
-            await client.query("BEGIN");
-            await this.assertCanEditProject(projectId, userId, client);
-
-            await client.query(
-                `
-            INSERT INTO project_documents (
-                project_id,
-                kind,
-                asset_url,
-                content_type,
-                sha256,
-                metadata,
-                s3_key
-            )
-            VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)
-            `,
-                [
-                    projectId,
-                    input.kind?.trim() || "general",
-                    input.assetUrl,
-                    input.contentType ?? null,
-                    input.sha256 ?? null,
-                    JSON.stringify({
-                        ...(input.metadata ?? {}),
-                        name: input.name?.trim() || null,
-                        type: input.type?.trim() || null,
-                    }),
-                    input.s3Key ?? null,
-                ]
-            );
-
-            await client.query(
-                `UPDATE projects SET updated_at = NOW() WHERE id = $1`,
-                [projectId]
-            );
-
-            await client.query("COMMIT");
-            return this.getProjectById(projectId, userId);
-        } catch (error) {
-            await client.query("ROLLBACK");
-            throw error;
-        } finally {
-            client.release();
-        }
-    }
-
-    async updateProjectDocument(
-        projectId: string,
-        documentId: string,
-        userId: string,
-        input: {
-            name?: string | null;
-            type?: string | null;
-        }
-    ) {
-        const client = await this.db.connect();
-
-        try {
-            await client.query("BEGIN");
-            await this.assertCanEditProject(projectId, userId, client);
-
-            const existing = await client.query<{
-                id: string;
-                metadata: Record<string, unknown> | null;
-            }>(
-                `
-            SELECT id, metadata
-            FROM project_documents
-            WHERE id = $1
-              AND project_id = $2
-            LIMIT 1
-            `,
-                [documentId, projectId]
-            );
-
-            const row = existing.rows[0];
-            if (!row) {
-                throw new Error("Document not found");
-            }
-
-            const nextMetadata = {
-                ...(row.metadata ?? {}),
-                ...(input.name !== undefined ? { name: input.name?.trim() || null } : {}),
-                ...(input.type !== undefined ? { type: input.type?.trim() || null } : {}),
-            };
-
-            await client.query(
-                `
-            UPDATE project_documents
-            SET metadata = $3::jsonb
-            WHERE id = $1
-              AND project_id = $2
-            `,
-                [
-                    documentId,
-                    projectId,
-                    JSON.stringify(nextMetadata),
-                ]
-            );
-
-            await client.query(
-                `UPDATE projects SET updated_at = NOW() WHERE id = $1`,
-                [projectId]
-            );
-
-            await client.query("COMMIT");
-            return this.getProjectById(projectId, userId);
-        } catch (error) {
-            await client.query("ROLLBACK");
-            throw error;
-        } finally {
-            client.release();
-        }
-    }
-
-    async deleteProjectDocument(
-        projectId: string,
-        documentId: string,
-        userId: string
-    ): Promise<{ s3Key: string | null; project: any | null }> {
-        const client = await this.db.connect();
-
-        try {
-            await client.query("BEGIN");
-            await this.assertCanEditProject(projectId, userId, client);
-
-            const existing = await client.query<{ s3_key: string | null }>(
-                `
-            DELETE FROM project_documents
-            WHERE id = $1
-              AND project_id = $2
-            RETURNING s3_key
-            `,
-                [documentId, projectId]
-            );
-
-            const row = existing.rows[0];
-            if (!row) {
-                throw new Error("Document not found");
-            }
-
-            await client.query(
-                `UPDATE projects SET updated_at = NOW() WHERE id = $1`,
-                [projectId]
-            );
-
-            await client.query("COMMIT");
-            return {
-                s3Key: row.s3_key,
-                project: await this.getProjectById(projectId, userId),
-            };
-        } catch (error) {
-            await client.query("ROLLBACK");
-            throw error;
-        } finally {
-            client.release();
-        }
-    }
-
-    async createProjectUpdate(
+    async updateProjectVisibility(
         projectId: string,
         currentUserId: string,
-        input: CreateProjectUpdateBody
+        projectVisibility: "public" | "private"
     ) {
         const existing = await this.db.query(
             `
@@ -1896,353 +1926,121 @@ SELECT json_build_object(
             throw err;
         }
 
-        const sortOrderRes = await this.db.query<{ next_sort_order: number }>(
+        await this.db.query(
             `
-            SELECT COALESCE(MAX(sort_order), -1) + 1 AS next_sort_order
-            FROM project_updates
+            UPDATE projects
+            SET visibility = $2,
+                updated_at = now()
+            WHERE id = $1
+            `,
+            [projectId, projectVisibility]
+        );
+
+        return this.getProjectById(projectId, currentUserId);
+    }
+
+    async deleteProject(projectId: string, currentUserId: string): Promise<boolean> {
+        const existing = await this.db.query(
+            `
+        SELECT id, owner_user_id
+        FROM projects
+        WHERE id = $1
+          AND COALESCE(delete_flag, false) = false
+        LIMIT 1
+        `,
+            [projectId]
+        );
+
+        const row = existing.rows[0];
+        if (!row) {
+            return false;
+        }
+
+        if (row.owner_user_id !== currentUserId) {
+            const err = new Error("Forbidden");
+            (err as any).statusCode = 403;
+            throw err;
+        }
+
+        const client = await this.db.connect();
+
+        try {
+            await client.query("BEGIN");
+
+            await client.query(
+                `
+            UPDATE projects
+            SET delete_flag = true,
+                updated_at = now()
+            WHERE id = $1
+            `,
+                [projectId]
+            );
+
+            await client.query(
+                `
+            UPDATE project_users
+            SET delete_flag = true,
+                updated_at = now()
             WHERE project_id = $1
               AND COALESCE(delete_flag, false) = false
             `,
-            [projectId]
-        );
+                [projectId]
+            );
 
-        const nextSortOrder = Number(sortOrderRes.rows[0]?.next_sort_order ?? 0);
-        const normalized = this.normalizeProjectUpdateInput(input);
-
-        const insertRes = await this.db.query<{
-            id: string;
-            title: string;
-            description: string | null;
-            update_date: string | null;
-            author_name: string | null;
-            update_type: "progress" | "stage" | null;
-        }>(
-            `
-            INSERT INTO project_updates (
-                project_id,
-                title,
-                description,
-                update_date,
-                author_name,
-                update_type,
-                sort_order,
-                is_active,
-                created_by,
-                updated_by,
-                created_at,
-                updated_at,
-                delete_flag
-            )
-            VALUES (
-                $1, $2, NULLIF($3, ''), $4, NULLIF($5, ''), $6, $7, true, $8, $8, now(), now(), false
-            )
-            RETURNING
-                id,
-                title,
-                description,
-                update_date,
-                author_name,
-                update_type
+            await client.query(
+                `
+            UPDATE project_opportunities
+            SET delete_flag = true,
+                deleted_at = now(),
+                updated_at = now(),
+                updated_by = $2
+            WHERE project_id = $1
+              AND COALESCE(delete_flag, false) = false
             `,
-            [
-                projectId,
-                normalized.title,
-                normalized.description,
-                normalized.parsedDate,
-                normalized.authorName,
-                normalized.type,
-                nextSortOrder,
-                currentUserId,
-            ]
-        );
+                [projectId, currentUserId]
+            );
 
-        const created = insertRes.rows[0];
-        if (created) {
-            return {
-                id: created.id,
-                title: created.title,
-                description: created.description ?? null,
-                dateLabel: created.update_date
-                    ? new Date(created.update_date).toISOString().slice(0, 10)
-                    : null,
-                authorName: created.author_name ?? null,
-                type: created.update_type === "stage" ? "stage" : "progress",
-            };
-        }
-    }
-
-    private async assertCanEditProject(
-        projectId: string,
-        userId: string,
-        client: Pool | { query: Pool["query"] } = this.db
-    ): Promise<{ ownerUserId: string | null }> {
-        const accessCheck = await client.query<{
-            id: string;
-            owner_user_id: string | null;
-            user_permission: "creator" | "viewer" | null;
-        }>(
-            `
-        SELECT
-            p.id,
-            p.owner_user_id,
-            (
-                SELECT pu.permission
-                FROM project_users pu
-                WHERE pu.project_id = p.id
-                  AND pu.member_type = 'user'
-                  AND pu.member_user_id = $2
-                  AND COALESCE(pu.delete_flag, false) = false
-                ORDER BY CASE pu.permission WHEN 'creator' THEN 1 ELSE 2 END
-                LIMIT 1
-            ) AS user_permission
-        FROM projects p
-        WHERE p.id = $1
-          AND COALESCE(p.delete_flag, false) = false
-        LIMIT 1
-        `,
-            [projectId, userId]
-        );
-
-        const existing = accessCheck.rows[0];
-        if (!existing) {
-            throw new Error("Project not found");
-        }
-
-        const canEdit =
-            existing.owner_user_id === userId || existing.user_permission === "creator";
-
-        if (!canEdit) {
-            throw new Error("Forbidden");
-        }
-
-        return { ownerUserId: existing.owner_user_id };
-    }
-
-    private async loadProjectMedia(projectId: string): Promise<ProjectDetailMediaItem[]> {
-        const res = await this.db.query<{
-            id: string;
-            kind: string;
-            asset_url: string | null;
-            s3_key: string | null;
-            content_type: string | null;
-            metadata: Record<string, unknown> | null;
-            is_cover: boolean | null;
-            created_at: string;
-        }>(
-            `
-        SELECT
-            id,
-            kind,
-            asset_url,
-            s3_key,
-            content_type,
-            metadata,
-            is_cover,
-            created_at
-        FROM project_media
-        WHERE project_id = $1
-        ORDER BY COALESCE(is_cover, false) DESC, created_at DESC
-        `,
-            [projectId]
-        );
-
-        return res.rows.map((row) => {
-            const metadata =
-                row.metadata && typeof row.metadata === "object" ? row.metadata : {};
-
-            return {
-                id: row.id,
-                kind: row.kind,
-                assetUrl: toPublicAssetUrl(row) ?? "",
-                contentType: row.content_type ?? null,
-                caption:
-                    typeof metadata.caption === "string" && metadata.caption.trim()
-                        ? metadata.caption.trim()
-                        : null,
-                isCover: Boolean(row.is_cover),
-                createdAt: row.created_at,
-            };
-        });
-    }
-
-    private async loadProjectDocuments(projectId: string): Promise<ProjectDetailDocumentItem[]> {
-        const res = await this.db.query<{
-            id: string;
-            kind: string;
-            asset_url: string | null;
-            s3_key: string | null;
-            content_type: string | null;
-            metadata: Record<string, unknown> | null;
-            created_at: string;
-        }>(
-            `
-        SELECT
-            id,
-            kind,
-            asset_url,
-            s3_key,
-            content_type,
-            metadata,
-            created_at
-        FROM project_documents
-        WHERE project_id = $1
-        ORDER BY created_at DESC
-        `,
-            [projectId]
-        );
-
-        return res.rows.map((row) => {
-            const metadata =
-                row.metadata && typeof row.metadata === "object" ? row.metadata : {};
-
-            return {
-                id: row.id,
-                kind: row.kind,
-                assetUrl: toPublicAssetUrl(row) ?? "",
-                contentType: row.content_type ?? null,
-                name:
-                    typeof metadata.name === "string" && metadata.name.trim()
-                        ? metadata.name.trim()
-                        : null,
-                type:
-                    typeof metadata.type === "string" && metadata.type.trim()
-                        ? metadata.type.trim()
-                        : null,
-                createdAt: row.created_at,
-            };
-        });
-    }
-
-    async listProjectUpdates(
-        currentUserId: string | null,
-        input?: { limit?: number }
-    ): Promise<ListProjectUpdatesResult> {
-        const limit = Math.min(Math.max(input?.limit ?? 5, 1), 20);
-
-        const res = await this.db.query<{
-            id: string;
-            project_id: string;
-            project_name: string;
-            title: string;
-            description: string | null;
-            update_date: string | null;
-            author_name: string | null;
-            update_type: "progress" | "stage" | null;
-            created_at: string;
-        }>(
-            `
-            SELECT
-                pu.id,
-                pu.project_id,
-                p.name AS project_name,
-                pu.title,
-                pu.description,
-                pu.update_date,
-                pu.author_name,
-                pu.update_type,
-                pu.created_at
-            FROM project_updates pu
-            INNER JOIN projects p
-                ON p.id = pu.project_id
-               AND COALESCE(p.delete_flag, false) = false
-            WHERE COALESCE(pu.delete_flag, false) = false
-              AND COALESCE(pu.is_active, true) = true
-              AND (
-                    p.owner_user_id = $1
-                    OR EXISTS (
-                        SELECT 1
-                        FROM project_users px
-                        WHERE px.project_id = p.id
-                          AND px.member_type = 'user'
-                          AND px.member_user_id = $1
-                          AND COALESCE(px.delete_flag, false) = false
-                    )
-                  )
-            ORDER BY
-                pu.update_date DESC NULLS LAST,
-                pu.created_at DESC
-            LIMIT $2
+            await client.query(
+                `
+            UPDATE project_updates
+            SET delete_flag = true,
+                deleted_at = now(),
+                updated_at = now(),
+                updated_by = $2
+            WHERE project_id = $1
+              AND COALESCE(delete_flag, false) = false
             `,
-            [currentUserId, limit]
-        );
+                [projectId, currentUserId]
+            );
 
-        return {
-            items: res.rows.map((row) => ({
-                id: row.id,
-                projectId: row.project_id,
-                projectName: row.project_name,
-                title: row.title,
-                description: row.description ?? null,
-                dateLabel: row.update_date
-                    ? new Date(row.update_date).toISOString().slice(0, 10)
-                    : null,
-                authorName: row.author_name ?? null,
-                type: row.update_type === "stage" ? "stage" : "progress",
-                createdAt: row.created_at,
-            })),
-        };
-    }
+            await client.query(
+                `
+            DELETE FROM user_saved_items
+            WHERE entity_type = 'project'
+              AND entity_id = $1
+            `,
+                [projectId]
+            );
 
-    async listProjectOpportunities(
-        currentUserId: string | null,
-        input?: { limit?: number }
-    ): Promise<ListProjectOpportunitiesResult> {
-        const limit = Math.min(Math.max(input?.limit ?? 5, 1), 20);
+            await client.query(
+                `
+            DELETE FROM user_saved_items usi
+            USING project_opportunities po
+            WHERE usi.entity_type = 'opportunity'
+              AND usi.entity_id = po.id
+              AND po.project_id = $1
+            `,
+                [projectId]
+            );
 
-        const res = await this.db.query<{
-            id: string;
-            project_id: string;
-            project_name: string;
-            opportunity_type: string;
-            description: string | null;
-            is_priority: boolean | null;
-            created_at: string;
-        }>(
-            `
-        SELECT
-            po.id,
-            po.project_id,
-            p.name AS project_name,
-            po.opportunity_type,
-            po.description,
-            po.is_priority,
-            po.created_at
-        FROM project_opportunities po
-        INNER JOIN projects p
-            ON p.id = po.project_id
-           AND COALESCE(p.delete_flag, false) = false
-        WHERE COALESCE(po.delete_flag, false) = false
-          AND COALESCE(po.is_active, true) = true
-          AND (
-                p.owner_user_id = $1
-                OR EXISTS (
-                    SELECT 1
-                    FROM project_users px
-                    WHERE px.project_id = p.id
-                      AND px.member_type = 'user'
-                      AND px.member_user_id = $1
-                      AND COALESCE(px.delete_flag, false) = false
-                )
-              )
-        ORDER BY
-            COALESCE(po.is_priority, false) DESC,
-            po.sort_order ASC NULLS LAST,
-            po.created_at DESC
-        LIMIT $2
-        `,
-            [currentUserId, limit]
-        );
-
-        return {
-            items: res.rows.map((row) => ({
-                id: row.id,
-                projectId: row.project_id,
-                projectName: row.project_name,
-                type: row.opportunity_type,
-                description: row.description ?? null,
-                urgent: Boolean(row.is_priority),
-                createdAt: row.created_at,
-            })),
-        };
+            await client.query("COMMIT");
+            return true;
+        } catch (error) {
+            await client.query("ROLLBACK");
+            throw error;
+        } finally {
+            client.release();
+        }
     }
 }

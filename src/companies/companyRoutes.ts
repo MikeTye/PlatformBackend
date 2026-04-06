@@ -39,6 +39,12 @@ export function createCompanyRoutes(db: Pool) {
         companyController.getOrCreateInviteLink
     );
 
+    router.delete(
+        "/:companyId",
+        requireAuth,
+        companyController.deleteCompany
+    );
+
     router.get("/:companyId/media/upload-url", requireAuth, companyController.getCompanyMediaUploadUrl);
     router.post("/:companyId/media", requireAuth, companyController.createCompanyMedia);
     router.patch("/:companyId/media/:mediaId", requireAuth, companyController.updateCompanyMedia);
