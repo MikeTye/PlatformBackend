@@ -1,4 +1,5 @@
 import type { Pool } from "pg";
+import { toPublicAssetUrl } from "../lib/s3Media.js";
 import type { SaveItemInput, SavedEntityType } from "./schema.js";
 
 type SaveItemRow = {
@@ -29,6 +30,7 @@ type ListSavedItemsResult = {
             verifiedFields: number;
             totalFields: number;
             photoUrl: string | null;
+            thumbUrl: string | null;
             isMine: boolean;
         };
     }>;
@@ -155,31 +157,55 @@ export class SavedItemService {
         if (entityType === "all" || entityType === "project") {
             const projectsRes = await this.db.query(
                 `
-                SELECT
-                    usi.created_at AS saved_at,
-                    p.id,
-                    p.upid,
-                    COALESCE(NULLIF(TRIM(p.name), ''), 'Untitled Project') AS name,
-                    COALESCE(c.display_name, 'Unknown Developer') AS developer,
-                    p.description,
-                    p.stage,
-                    p.project_type AS type,
-                    p.host_country AS country,
-                    p.host_country_code AS country_code,
-                    NULL::text AS expected_credits,
-                    NULL::text AS photo_url,
-                    (p.owner_user_id = $1) AS is_mine
-                FROM user_saved_items usi
-                INNER JOIN projects p
-                    ON p.id = usi.entity_id
-                LEFT JOIN companies c
-                    ON c.id = p.company_id
-                   AND COALESCE(c.delete_flag, false) = false
-                WHERE usi.user_id = $1
-                  AND usi.entity_type = 'project'
-                  AND COALESCE(p.delete_flag, false) = false
-                ORDER BY usi.created_at DESC
-                `,
+        SELECT
+            usi.created_at AS saved_at,
+            p.id,
+            p.upid,
+            COALESCE(NULLIF(TRIM(p.name), ''), 'Untitled Project') AS name,
+            COALESCE(c.display_name, 'Unknown Developer') AS developer,
+            p.description,
+            p.stage,
+            p.project_type AS type,
+            p.host_country AS country,
+            p.host_country_code AS country_code,
+            p.total_area AS hectares,
+            NULL::text AS expected_credits,
+            cover_pm.asset_url AS photo_url,
+            thumb_pm.asset_url AS thumb_url,
+            (p.owner_user_id = $1) AS is_mine
+        FROM user_saved_items usi
+        INNER JOIN projects p
+            ON p.id = usi.entity_id
+        LEFT JOIN companies c
+            ON c.id = p.company_id
+           AND COALESCE(c.delete_flag, false) = false
+
+        LEFT JOIN LATERAL (
+            SELECT pm1.id, pm1.asset_url
+            FROM project_media pm1
+            WHERE pm1.project_id = p.id
+              AND COALESCE(pm1.is_system_generated, false) = false
+            ORDER BY
+              COALESCE(pm1.is_cover, false) DESC,
+              pm1.created_at ASC
+            LIMIT 1
+        ) cover_pm ON TRUE
+
+        LEFT JOIN LATERAL (
+            SELECT pm2.asset_url
+            FROM project_media pm2
+            WHERE pm2.source_media_id = cover_pm.id
+              AND pm2.variant = 'logo'
+              AND COALESCE(pm2.is_system_generated, false) = true
+            ORDER BY pm2.created_at DESC
+            LIMIT 1
+        ) thumb_pm ON TRUE
+
+        WHERE usi.user_id = $1
+          AND usi.entity_type = 'project'
+          AND COALESCE(p.delete_flag, false) = false
+        ORDER BY usi.created_at DESC
+        `,
                 [userId]
             );
 
@@ -196,12 +222,19 @@ export class SavedItemService {
                     type: row.type,
                     country: row.country,
                     countryCode: row.country_code,
-                    hectares: row.hectares ?? null,
+                    hectares: row.hectares == null ? null : Number(row.hectares),
                     expectedCredits: row.expected_credits,
                     freshness: null,
                     verifiedFields: 0,
                     totalFields: 0,
-                    photoUrl: row.photo_url,
+                    photoUrl: toPublicAssetUrl({
+                        asset_url: row.photo_url,
+                        s3_key: null,
+                    }),
+                    thumbUrl: toPublicAssetUrl({
+                        asset_url: row.thumb_url,
+                        s3_key: null,
+                    }),
                     isMine: row.is_mine,
                 },
             }));

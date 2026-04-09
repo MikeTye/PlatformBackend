@@ -266,6 +266,10 @@ export class ProjectService {
             ...detail,
             description: visible("overview") ? detail.description : null,
             methodology: visible("overview") ? detail.methodology : null,
+            methodologyId: visible("overview") ? detail.methodologyId : null,
+            methodologyNotes: visible("overview") ? detail.methodologyNotes : null,
+            projectMethodologyDocUrl: visible("overview") ? detail.projectMethodologyDocUrl : null,
+
             totalAreaHa: visible("overview") || visible("impact") ? detail.totalAreaHa : null,
             estimatedAnnualRemoval:
                 visible("overview") || visible("impact") ? detail.estimatedAnnualRemoval : null,
@@ -275,11 +279,43 @@ export class ProjectService {
 
             country: visible("location") ? detail.country : null,
             region: visible("location") ? detail.region : null,
+            latitude: visible("location") ? detail.latitude : null,
+            longitude: visible("location") ? detail.longitude : null,
 
             readiness: visible("readiness") ? detail.readiness : [],
-            registryName: visible("registry") ? detail.registryName : null,
+
+            registrationPlatform: visible("registry") ? detail.registrationPlatform : null,
             registryStatus: visible("registry") ? detail.registryStatus : null,
-            registryProjectId: visible("registry") ? detail.registryProjectId : null,
+            auditStatus: visible("registry") ? detail.auditStatus : null,
+            registryId: visible("registry") ? detail.registryId : null,
+            registryProjectUrl: visible("registry") ? detail.registryProjectUrl : null,
+            registryDate: visible("registry") ? detail.registryDate : null,
+            registrationDateExpected: visible("registry") ? detail.registrationDateExpected : null,
+            registrationDateActual: visible("registry") ? detail.registrationDateActual : null,
+            tenureText: visible("registry") ? detail.tenureText : null,
+
+            totalCreditsIssued:
+                visible("overview") || visible("impact") ? detail.totalCreditsIssued : null,
+            annualEstimatedCredits:
+                visible("overview") || visible("impact") ? detail.annualEstimatedCredits : null,
+            annualEstimateUnit:
+                visible("overview") || visible("impact") ? detail.annualEstimateUnit : null,
+            firstVintageYear:
+                visible("overview") || visible("impact") ? detail.firstVintageYear : null,
+            creditIssuanceDate:
+                visible("overview") || visible("impact") ? detail.creditIssuanceDate : null,
+            creditingStart:
+                visible("overview") || visible("impact") ? detail.creditingStart : null,
+            creditingEnd:
+                visible("overview") || visible("impact") ? detail.creditingEnd : null,
+            implementationStart:
+                visible("overview") || visible("impact") ? detail.implementationStart : null,
+            implementationEnd:
+                visible("overview") || visible("impact") ? detail.implementationEnd : null,
+            inceptionDate:
+                visible("overview") || visible("impact") ? detail.inceptionDate : null,
+            completionDate:
+                visible("overview") || visible("impact") ? detail.completionDate : null,
 
             opportunities: visible("opportunities") ? detail.opportunities : [],
             updates: visible("updates") ? detail.updates : [],
@@ -293,34 +329,61 @@ export class ProjectService {
     private async loadProjectBaseRow(projectId: string) {
         const projectRes = await this.db.query(
             `
-            SELECT
-              p.id,
-              p.upid,
-              p.name,
-              p.project_type,
-              p.stage,
-              p.tagline,
-              p.host_country,
-              p.host_region,
-              p.latitude,
-              p.longitude,
-              p.story,
-              p.approach,
-              p.methodology_version,
-              p.pdd_status,
-              p.expected_annual_reductions,
-              p.visibility,
-              p.owner_user_id,
-              p.company_id,
-              c.display_name AS company_name
-            FROM projects p
-            LEFT JOIN companies c
-              ON c.id = p.company_id
-             AND COALESCE(c.delete_flag, false) = false
-            WHERE p.id = $1
-              AND COALESCE(p.delete_flag, false) = false
-            LIMIT 1
-            `,
+        SELECT
+          p.id,
+          p.upid,
+          p.name,
+          p.project_type,
+          p.stage,
+          p.tagline,
+          p.host_country,
+          p.host_region,
+          p.host_country_code,
+          p.latitude,
+          p.longitude,
+          p.story,
+          p.approach,
+          p.methodology_id,
+          p.methodology_version,
+          p.methodology_notes,
+          p.project_methodology_doc_url,
+          p.pdd_status,
+          p.audit_status,
+          p.expected_annual_reductions,
+          p.visibility,
+          p.owner_user_id,
+          p.company_id,
+
+          p.registry_date,
+          p.credit_issuance_date,
+          p.registration_date_expected,
+          p.registration_date_actual,
+          p.implementation_start,
+          p.implementation_end,
+          p.crediting_start,
+          p.crediting_end,
+          p.inception_date,
+          p.completion_date,
+
+          p.registration_platform,
+          p.registry_id,
+          p.registry_project_url,
+          p.tenure_text,
+          p.total_area,
+          p.total_credits_issued,
+          p.annual_estimated_credits,
+          p.annual_estimate_unit,
+          p.first_vintage_year,
+
+          c.display_name AS company_name
+        FROM projects p
+        LEFT JOIN companies c
+          ON c.id = p.company_id
+         AND COALESCE(c.delete_flag, false) = false
+        WHERE p.id = $1
+          AND COALESCE(p.delete_flag, false) = false
+        LIMIT 1
+        `,
             [projectId]
         );
 
@@ -364,15 +427,76 @@ export class ProjectService {
             storyApproach: row.approach ?? null,
 
             methodology: row.methodology_version ?? null,
-            registryName: null,
-            registryStatus: row.pdd_status ?? null,
-            registryProjectId: null,
+            methodologyId: row.methodology_id ?? null,
+            methodologyNotes: row.methodology_notes ?? null,
+            projectMethodologyDocUrl: row.project_methodology_doc_url ?? null,
 
-            totalAreaHa: null,
+            registrationPlatform: row.registration_platform ?? null,
+            registryStatus: row.pdd_status ?? null,
+            auditStatus: row.audit_status ?? null,
+            registryId: row.registry_id ?? null,
+            registryProjectUrl: row.registry_project_url ?? null,
+
+            registryDate: row.registry_date
+                ? new Date(row.registry_date).toISOString().slice(0, 10)
+                : null,
+
+            registrationDateExpected: row.registration_date_expected
+                ? new Date(row.registration_date_expected).toISOString().slice(0, 10)
+                : null,
+
+            registrationDateActual: row.registration_date_actual
+                ? new Date(row.registration_date_actual).toISOString().slice(0, 10)
+                : null,
+
+            creditIssuanceDate: row.credit_issuance_date
+                ? new Date(row.credit_issuance_date).toISOString().slice(0, 10)
+                : null,
+
+            implementationStart: row.implementation_start
+                ? new Date(row.implementation_start).toISOString().slice(0, 10)
+                : null,
+
+            implementationEnd: row.implementation_end
+                ? new Date(row.implementation_end).toISOString().slice(0, 10)
+                : null,
+
+            creditingStart: row.crediting_start
+                ? new Date(row.crediting_start).toISOString().slice(0, 10)
+                : null,
+
+            creditingEnd: row.crediting_end
+                ? new Date(row.crediting_end).toISOString().slice(0, 10)
+                : null,
+
+            inceptionDate: row.inception_date
+                ? new Date(row.inception_date).toISOString().slice(0, 10)
+                : null,
+
+            completionDate: row.completion_date
+                ? new Date(row.completion_date).toISOString().slice(0, 10)
+                : null,
+
+            tenureText: row.tenure_text ?? null,
+
+            totalAreaHa:
+                row.total_area == null ? null : Number(row.total_area),
+
             estimatedAnnualRemoval:
                 row.expected_annual_reductions == null
                     ? null
                     : JSON.stringify(row.expected_annual_reductions),
+
+            totalCreditsIssued:
+                row.total_credits_issued == null ? null : Number(row.total_credits_issued),
+
+            annualEstimatedCredits:
+                row.annual_estimated_credits == null ? null : Number(row.annual_estimated_credits),
+
+            annualEstimateUnit: row.annual_estimate_unit ?? null,
+
+            firstVintageYear:
+                row.first_vintage_year == null ? null : Number(row.first_vintage_year),
 
             readiness: [],
             opportunities,
@@ -1498,24 +1622,119 @@ SELECT json_build_object(
             values.push(value);
         };
 
-        if (patch.description !== undefined) set('tagline', patch.description);
-        if (patch.latitude !== undefined) set('latitude', patch.latitude);
-        if (patch.longitude !== undefined) set('longitude', patch.longitude);
-        if (patch.registryProjectId !== undefined) set('registry_project_id', patch.registryProjectId); // if column exists
-        if (patch.name !== undefined) set('name', patch.name);
-        if (patch.stage !== undefined) set('stage', patch.stage);
-        if (patch.type !== undefined) set('project_type', patch.type);
-        if (patch.projectVisibility !== undefined) set('visibility', patch.projectVisibility);
-        if (patch.country !== undefined) set('host_country', patch.country);
-        if (patch.region !== undefined) set('host_region', patch.region);
-        if (patch.storyProblem !== undefined) set('story', patch.storyProblem);
-        if (patch.storyApproach !== undefined) set('approach', patch.storyApproach);
-        if (patch.methodology !== undefined) set('methodology_version', patch.methodology);
-        if (patch.registryStatus !== undefined) set('pdd_status', patch.registryStatus);
+        const toNullableDate = (value: string | null | undefined) => {
+            if (value === undefined) return undefined;
+            if (value === null) return null;
+            const trimmed = value.trim();
+            return trimmed ? trimmed : null;
+        };
+
+        if (patch.description !== undefined) set("tagline", patch.description);
+        if (patch.latitude !== undefined) set("latitude", patch.latitude);
+        if (patch.longitude !== undefined) set("longitude", patch.longitude);
+
+        if (patch.name !== undefined) set("name", patch.name);
+        if (patch.stage !== undefined) set("stage", patch.stage);
+        if (patch.type !== undefined) set("project_type", patch.type);
+        if (patch.projectVisibility !== undefined) set("visibility", patch.projectVisibility);
+        if (patch.country !== undefined) set("host_country", patch.country);
+        if (patch.region !== undefined) set("host_region", patch.region);
+
+        if (patch.storyProblem !== undefined) set("story", patch.storyProblem);
+        if (patch.storyApproach !== undefined) set("approach", patch.storyApproach);
+
+        if (patch.methodology !== undefined) set("methodology_version", patch.methodology);
+        if (patch.methodologyId !== undefined) set("methodology_id", patch.methodologyId);
+        if (patch.methodologyNotes !== undefined) set("methodology_notes", patch.methodologyNotes);
+        if (patch.projectMethodologyDocUrl !== undefined) {
+            set("project_methodology_doc_url", patch.projectMethodologyDocUrl);
+        }
+
+        if (patch.registryStatus !== undefined) set("pdd_status", patch.registryStatus);
+        if (patch.auditStatus !== undefined) set("audit_status", patch.auditStatus);
+
+        if (patch.registrationPlatform !== undefined) {
+            set("registration_platform", patch.registrationPlatform);
+        }
+
+        if (patch.registryId !== undefined) {
+            set("registry_id", patch.registryId);
+        }
+
+        if (patch.registryProjectUrl !== undefined) {
+            set("registry_project_url", patch.registryProjectUrl);
+        }
+
+        if (patch.registryDate !== undefined) {
+            set("registry_date", toNullableDate(patch.registryDate));
+        }
+
+        if (patch.registrationDateExpected !== undefined) {
+            set("registration_date_expected", toNullableDate(patch.registrationDateExpected));
+        }
+
+        if (patch.registrationDateActual !== undefined) {
+            set("registration_date_actual", toNullableDate(patch.registrationDateActual));
+        }
+
+        if (patch.creditIssuanceDate !== undefined) {
+            set("credit_issuance_date", toNullableDate(patch.creditIssuanceDate));
+        }
+
+        if (patch.implementationStart !== undefined) {
+            set("implementation_start", toNullableDate(patch.implementationStart));
+        }
+
+        if (patch.implementationEnd !== undefined) {
+            set("implementation_end", toNullableDate(patch.implementationEnd));
+        }
+
+        if (patch.creditingStart !== undefined) {
+            set("crediting_start", toNullableDate(patch.creditingStart));
+        }
+
+        if (patch.creditingEnd !== undefined) {
+            set("crediting_end", toNullableDate(patch.creditingEnd));
+        }
+
+        if (patch.inceptionDate !== undefined) {
+            set("inception_date", toNullableDate(patch.inceptionDate));
+        }
+
+        if (patch.completionDate !== undefined) {
+            set("completion_date", toNullableDate(patch.completionDate));
+        }
+
+        if (patch.tenureText !== undefined) {
+            set("tenure_text", patch.tenureText);
+        }
+
+        if (patch.totalAreaHa !== undefined) {
+            set("total_area", patch.totalAreaHa);
+        }
+
+        if (patch.totalCreditsIssued !== undefined) {
+            set("total_credits_issued", patch.totalCreditsIssued);
+        }
+
+        if (patch.annualEstimatedCredits !== undefined) {
+            set("annual_estimated_credits", patch.annualEstimatedCredits);
+        }
+
+        if (patch.annualEstimateUnit !== undefined) {
+            set("annual_estimate_unit", patch.annualEstimateUnit);
+        }
+
+        if (patch.firstVintageYear !== undefined) {
+            set("first_vintage_year", patch.firstVintageYear);
+        }
+
         if (patch.estimatedAnnualRemoval !== undefined) {
             set(
-                'expected_annual_reductions',
-                patch.estimatedAnnualRemoval ? JSON.stringify({ value: patch.estimatedAnnualRemoval }) : null
+                "expected_annual_reductions",
+                patch.estimatedAnnualRemoval
+                    ? JSON.stringify({ value: patch.estimatedAnnualRemoval })
+                    : null
             );
         }
 
@@ -1526,10 +1745,10 @@ SELECT json_build_object(
 
         await this.db.query(
             `
-      UPDATE projects
-      SET ${updates.join(', ')}
-      WHERE id = $${i}
-      `,
+        UPDATE projects
+        SET ${updates.join(", ")}
+        WHERE id = $${i}
+        `,
             values
         );
     }

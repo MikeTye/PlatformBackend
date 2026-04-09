@@ -2,8 +2,6 @@ import { Router } from "express";
 import type { Pool } from "pg";
 import { AccountController } from "./accountController.js";
 import { AccountService } from "./accountService.js";
-
-// replace this import with your actual auth/session middleware
 import { requireAuth } from "../middleware/requireAuth.js";
 
 export function buildAccountRouter(db: Pool): Router {
@@ -16,7 +14,14 @@ export function buildAccountRouter(db: Pool): Router {
     router.put("/", requireAuth, controller.updateAccount);
     router.delete("/", requireAuth, controller.deleteAccount);
 
+    // authenticated self
+    router.get("/companies", requireAuth, controller.getOwnCompanies);
+    router.get("/projects", requireAuth, controller.getOwnProjects);
+
+    // public profile
     router.get("/:id/profile", controller.getPublicProfile);
+    router.get("/:id/companies", controller.getPublicCompanies);
+    router.get("/:id/projects", controller.getPublicProjects);
 
     return router;
 }

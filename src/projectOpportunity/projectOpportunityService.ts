@@ -4,6 +4,8 @@ import type {
     UpdateProjectOpportunityBody,
 } from "./schema.js";
 
+const MAX_PROJECT_OPPORTUNITY_ITEMS = 10;
+
 type ProjectOpportunityRecord = {
     id: string;
     project_id: string;
@@ -68,6 +70,25 @@ export class ProjectOpportunityService {
             sortOrder: Number(row.sort_order ?? 0),
             isActive: Boolean(row.is_active),
         };
+    }
+
+    private async assertOpportunityLimitNotReached(projectId: string): Promise<void> {
+        const countRes = await this.db.query<{ total: string }>(
+            `
+            SELECT COUNT(*)::text AS total
+            FROM project_opportunities
+            WHERE project_id = $1
+              AND COALESCE(delete_flag, false) = false
+            `,
+            [projectId],
+        );
+
+        const total = Number(countRes.rows[0]?.total ?? 0);
+        if (total >= MAX_PROJECT_OPPORTUNITY_ITEMS) {
+            const err = new Error(`Project opportunity limit reached. Maximum ${MAX_PROJECT_OPPORTUNITY_ITEMS} items allowed.`);
+            (err as any).statusCode = 409;
+            throw err;
+        }
     }
 
     private async assertCanEditProject(
@@ -277,6 +298,7 @@ export class ProjectOpportunityService {
         input: CreateProjectOpportunityBody,
     ) {
         await this.assertCanEditProject(projectId, currentUserId);
+        await this.assertOpportunityLimitNotReached(projectId);
 
         const normalized = this.normalizeInput(input);
         if (!normalized.type) {

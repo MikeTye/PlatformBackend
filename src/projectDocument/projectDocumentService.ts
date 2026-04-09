@@ -6,6 +6,8 @@ import type {
 
 type DbLike = Pool | PoolClient;
 
+const MAX_PROJECT_DOCUMENT_ITEMS = 10;
+
 export class ProjectDocumentService {
     constructor(private readonly db: Pool) { }
 
@@ -53,10 +55,29 @@ export class ProjectDocumentService {
         );
     }
 
+    private async assertDocumentLimitNotReached(projectId: string, client: DbLike) {
+        const countRes = await client.query<{ total: string }>(
+            `
+            SELECT COUNT(*)::text AS total
+            FROM project_documents
+            WHERE project_id = $1
+            `,
+            [projectId]
+        );
+
+        const total = Number(countRes.rows[0]?.total ?? 0);
+        if (total >= MAX_PROJECT_DOCUMENT_ITEMS) {
+            const err = new Error(`Project document limit reached. Maximum ${MAX_PROJECT_DOCUMENT_ITEMS} items allowed.`);
+            (err as any).statusCode = 409;
+            throw err;
+        }
+    }
+
     async assertCanUpload(projectId: string, userId: string) {
         const client = await this.db.connect();
         try {
             await this.assertCanEditProject(projectId, userId, client);
+            await this.assertDocumentLimitNotReached(projectId, client);
         } finally {
             client.release();
         }
@@ -68,6 +89,7 @@ export class ProjectDocumentService {
         try {
             await client.query("BEGIN");
             await this.assertCanEditProject(projectId, userId, client);
+            await this.assertDocumentLimitNotReached(projectId, client);
 
             const insertRes = await client.query(
                 `

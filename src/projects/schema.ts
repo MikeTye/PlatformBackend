@@ -230,16 +230,42 @@ export type GetProjectResponse = {
     region: string | null;
     coverImageUrl: string | null;
 
+    projectVisibility: 'public' | 'private' | null;
+
     storyProblem: string | null;
     storyApproach: string | null;
 
     methodology: string | null;
-    registryName: string | null;
+    methodologyId?: string | null;
+    methodologyNotes?: string | null;
+    projectMethodologyDocUrl?: string | null;
+
+    registrationPlatform: string | null;
     registryStatus: string | null;
-    registryProjectId: string | null;
+    auditStatus?: string | null;
+    registryId: string | null;
+    registryProjectUrl?: string | null;
+    registryDate?: string | null;
+
+    registrationDateExpected?: string | null;
+    registrationDateActual?: string | null;
+    creditIssuanceDate?: string | null;
+
+    implementationStart?: string | null;
+    implementationEnd?: string | null;
+    creditingStart?: string | null;
+    creditingEnd?: string | null;
+    inceptionDate?: string | null;
+    completionDate?: string | null;
+
+    tenureText?: string | null;
 
     totalAreaHa: number | null;
     estimatedAnnualRemoval: string | null;
+    totalCreditsIssued?: number | null;
+    annualEstimatedCredits?: number | null;
+    annualEstimateUnit?: string | null;
+    firstVintageYear?: number | null;
 
     readiness: Array<{ id: string; label: string; status: 'yes' | 'progress' | 'seeking' | 'na'; note?: string | null }>;
     opportunities: Array<{ id: string; type: string; description?: string | null; urgent?: boolean }>;
@@ -287,7 +313,6 @@ export type GetProjectResponse = {
 
     myRole: 'creator' | 'viewer' | null;
     saved: boolean;
-    projectVisibility: 'public' | 'private' | null;
 };
 
 export const UpdateProjectVisibilityParamsSchema = z.object({
@@ -359,12 +384,38 @@ export const UpdateProjectBodySchema = z.object({
     storyApproach: z.string().trim().nullable().optional(),
 
     methodology: z.string().trim().nullable().optional(),
-    registryName: z.string().trim().nullable().optional(),
+    methodologyId: z.string().uuid().nullable().optional(),
+    methodologyNotes: z.string().trim().nullable().optional(),
+    projectMethodologyDocUrl: z.string().trim().nullable().optional(),
+
+    // preferred names
+    registrationPlatform: z.string().trim().nullable().optional(),
+    registryId: z.string().trim().nullable().optional(),
+    registryProjectUrl: z.string().trim().nullable().optional(),
+
     registryStatus: z.string().trim().nullable().optional(),
-    registryProjectId: z.string().trim().nullable().optional(),
+    auditStatus: z.string().trim().nullable().optional(),
+
+    registryDate: z.string().trim().nullable().optional(),
+    registrationDateExpected: z.string().trim().nullable().optional(),
+    registrationDateActual: z.string().trim().nullable().optional(),
+    creditIssuanceDate: z.string().trim().nullable().optional(),
+
+    implementationStart: z.string().trim().nullable().optional(),
+    implementationEnd: z.string().trim().nullable().optional(),
+    creditingStart: z.string().trim().nullable().optional(),
+    creditingEnd: z.string().trim().nullable().optional(),
+    inceptionDate: z.string().trim().nullable().optional(),
+    completionDate: z.string().trim().nullable().optional(),
+
+    tenureText: z.string().trim().nullable().optional(),
 
     totalAreaHa: z.number().finite().nullable().optional(),
     estimatedAnnualRemoval: z.string().trim().nullable().optional(),
+    totalCreditsIssued: z.number().finite().nullable().optional(),
+    annualEstimatedCredits: z.number().finite().nullable().optional(),
+    annualEstimateUnit: z.string().trim().nullable().optional(),
+    firstVintageYear: z.number().int().nullable().optional(),
 
     opportunities: z.array(ProjectOpportunitySchema).optional(),
     team: z.array(ProjectTeamMemberUpdateSchema).optional(),

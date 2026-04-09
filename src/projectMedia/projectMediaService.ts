@@ -9,6 +9,8 @@ import { randomUUID } from "crypto";
 
 type DbLike = Pool | PoolClient;
 
+const MAX_PROJECT_MEDIA_ITEMS = 10;
+
 type ProjectMediaRow = {
     id: string;
     project_id: string;
@@ -97,6 +99,35 @@ export class ProjectMediaService {
         );
     }
 
+    private async assertMediaLimitNotReached(projectId: string, client: DbLike) {
+        const countRes = await client.query<{ total: string }>(
+            `
+            SELECT COUNT(*)::text AS total
+            FROM project_media
+            WHERE project_id = $1
+              AND COALESCE(is_system_generated, false) = false
+            `,
+            [projectId]
+        );
+
+        const total = Number(countRes.rows[0]?.total ?? 0);
+        if (total >= MAX_PROJECT_MEDIA_ITEMS) {
+            const err = new Error(`Project media limit reached. Maximum ${MAX_PROJECT_MEDIA_ITEMS} items allowed.`);
+            (err as any).statusCode = 409;
+            throw err;
+        }
+    }
+
+    async assertCanUpload(projectId: string, userId: string) {
+        const client = await this.db.connect();
+        try {
+            await this.assertCanEditProject(projectId, userId, client);
+            await this.assertMediaLimitNotReached(projectId, client);
+        } finally {
+            client.release();
+        }
+    }
+
     private async assertCanEditProject(projectId: string, userId: string, client: DbLike) {
         const res = await client.query(
             `
@@ -147,6 +178,7 @@ export class ProjectMediaService {
         try {
             await client.query("BEGIN");
             await this.assertCanEditProject(projectId, userId, client);
+            await this.assertMediaLimitNotReached(projectId, client);
 
             if (input.isCover) {
                 await client.query(

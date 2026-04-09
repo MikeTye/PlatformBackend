@@ -5,6 +5,9 @@ import { requireAuth } from "../middleware/requireAuth.js";
 import { CompanyController } from "./companyController.js";
 import { CompanyService } from "./companyService.js";
 
+import { createCompanyMediaRoutes } from "../companyMedia/companyMediaRoutes.js";
+import { createCompanyDocumentRoutes } from "../companyDocument/companyDocumentRoutes.js";
+
 export function createCompanyRoutes(db: Pool) {
     const router = Router();
 
@@ -45,15 +48,8 @@ export function createCompanyRoutes(db: Pool) {
         companyController.deleteCompany
     );
 
-    router.get("/:companyId/media/upload-url", requireAuth, companyController.getCompanyMediaUploadUrl);
-    router.post("/:companyId/media", requireAuth, companyController.createCompanyMedia);
-    router.patch("/:companyId/media/:mediaId", requireAuth, companyController.updateCompanyMedia);
-    router.delete("/:companyId/media/:mediaId", requireAuth, companyController.deleteCompanyMedia);
-
-    router.get("/:companyId/documents/upload-url", requireAuth, companyController.getCompanyDocumentUploadUrl);
-    router.post("/:companyId/documents", requireAuth, companyController.createCompanyDocument);
-    router.patch("/:companyId/documents/:documentId", requireAuth, companyController.updateCompanyDocument);
-    router.delete("/:companyId/documents/:documentId", requireAuth, companyController.deleteCompanyDocument);
+    router.use("/:companyId/media", createCompanyMediaRoutes(db));
+    router.use("/:companyId/documents", createCompanyDocumentRoutes(db));
 
     return router;
 }

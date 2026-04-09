@@ -112,4 +112,82 @@ export class AccountController {
             return next(error);
         }
     };
+
+    getOwnCompanies = async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+        try {
+            const userId = getAuthenticatedUserId(req);
+            if (!userId) {
+                return res.status(401).json({ message: "Unauthorized" });
+            }
+
+            const result = await this.accountService.getAccountCompanies(userId);
+            return res.status(200).json({ items: result });
+        } catch (error) {
+            if (error instanceof Error && error.message === "USER_NOT_FOUND") {
+                return res.status(404).json({ message: "User not found" });
+            }
+            return next(error);
+        }
+    };
+
+    getOwnProjects = async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+        try {
+            const userId = getAuthenticatedUserId(req);
+            if (!userId) {
+                return res.status(401).json({ message: "Unauthorized" });
+            }
+
+            const result = await this.accountService.getAccountProjects(userId);
+            return res.status(200).json({ items: result });
+        } catch (error) {
+            if (error instanceof Error && error.message === "USER_NOT_FOUND") {
+                return res.status(404).json({ message: "User not found" });
+            }
+            return next(error);
+        }
+    };
+
+    getPublicCompanies = async (req: Request, res: Response, next: NextFunction) => {
+        try {
+            const userId = String(req.params.id || "").trim();
+            if (!userId) {
+                return res.status(400).json({ message: "Invalid user id" });
+            }
+
+            const result = await this.accountService.getPublicProfileCompanies(userId);
+            return res.status(200).json({ items: result });
+        } catch (error) {
+            if (error instanceof Error && error.message === "USER_NOT_FOUND") {
+                return res.status(404).json({ message: "User not found" });
+            }
+
+            if (error instanceof Error && error.message === "PROFILE_NOT_PUBLIC") {
+                return res.status(404).json({ message: "User profile not found" });
+            }
+
+            return next(error);
+        }
+    };
+
+    getPublicProjects = async (req: Request, res: Response, next: NextFunction) => {
+        try {
+            const userId = String(req.params.id || "").trim();
+            if (!userId) {
+                return res.status(400).json({ message: "Invalid user id" });
+            }
+
+            const result = await this.accountService.getPublicProfileProjects(userId);
+            return res.status(200).json({ items: result });
+        } catch (error) {
+            if (error instanceof Error && error.message === "USER_NOT_FOUND") {
+                return res.status(404).json({ message: "User not found" });
+            }
+
+            if (error instanceof Error && error.message === "PROFILE_NOT_PUBLIC") {
+                return res.status(404).json({ message: "User profile not found" });
+            }
+
+            return next(error);
+        }
+    };
 }

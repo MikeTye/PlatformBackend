@@ -27,6 +27,7 @@ import { ErrorLogService } from "./errorLogs/errorLogService.js";
 import { createErrorLogRoutes } from "./errorLogs/errorLogRoutes.js";
 import { createErrorHandler } from "./middleware/errorHandler.js";
 import { registerProcessErrorHandlers } from "./errorLogs/processErrorHandler.js";
+import { buildShareLinkPublicRouter, buildShareLinkRouter } from "./shareLink/shareLinkRoutes.js";
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -84,6 +85,8 @@ app.use("/account", buildAccountRouter(pool));
 app.use("/error-logs", createErrorLogRoutes(pool));
 // app.use("/companies", companyRoutes);
 app.use("/companyClaims", companyClaimRoutes);
+app.use("/share-links", buildShareLinkRouter(pool));
+app.use("/auth/share-links", buildShareLinkPublicRouter(pool));
 
 app.use(createErrorHandler(errorLogService));
 

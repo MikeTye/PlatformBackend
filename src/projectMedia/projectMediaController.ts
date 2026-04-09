@@ -40,6 +40,8 @@ export class ProjectMediaController {
             const { projectId } = ProjectMediaProjectParamsSchema.parse(req.params);
             const { fileName, contentType } = ProjectMediaUploadUrlQuerySchema.parse(req.query);
 
+            await this.projectMediaService.assertCanUpload(projectId, userId);
+
             const upload = await getUploadUrlForProjectMedia(
                 projectId,
                 getFileExt(fileName),
